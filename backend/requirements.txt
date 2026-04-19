@@ -1,0 +1,41 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# ── LLM / Embeddings ──────────────────────────────────────────────────────────
+openai==1.68.2
+# New Google GenAI SDK — imported as: from google import genai
+google-genai==1.10.0
+# Legacy SDK — imported as: import google.generativeai as genai (used in ingestion_service.py)
+google-generativeai==0.8.3
+langchain-google-genai==2.0.7
+sentence-transformers==3.3.1
+
+# ── Vector stores ─────────────────────────────────────────────────────────────
+faiss-cpu==1.12.0
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.36
+
+# ── Document parsing ──────────────────────────────────────────────────────────
+pypdf==5.1.0
+python-docx==1.1.2
+openpyxl==3.1.5
+
+# ── HTTP / Networking ─────────────────────────────────────────────────────────
+requests==2.32.3
+urllib3==2.2.3
+# httpx version intentionally unpinned — let pip resolve between openai + google-genai constraints
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+apscheduler==3.10.4
+
+# ── Agentic AI (LangChain + LangGraph) ───────────────────────────────────────
+langchain==0.3.25
+langchain-openai==0.3.7
+langchain-google-genai==2.0.7
+langgraph==0.3.34
