@@ -79,6 +79,35 @@ class TicketLifecycleRepository:
         finally:
             conn.close()
 
+    def get_closed_tickets(self, tenant_id: str) -> List[dict]:
+        """
+        Returns all closed tickets for a tenant with ticket_id,
+        resolution and reason — used to populate the resolution dropdown.
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ticket_id, resolution, reason, matched_ticket_id, created_at
+                FROM ticket_events
+                WHERE tenant_id = ?
+                AND event_type = 'auto_closed'
+                ORDER BY created_at DESC
+            """, (tenant_id,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "ticket_id": r[0],
+                    "resolution": r[1] or "",
+                    "reason": r[2] or "",
+                    "matched_ticket_id": r[3] or "",
+                    "closed_at": r[4] or "",
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
     def list_events(self, tenant_id: str, limit: int = 50) -> List[dict]:
         conn = self._connect()
         cursor = conn.cursor()

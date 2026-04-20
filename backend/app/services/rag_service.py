@@ -99,17 +99,27 @@ class RAGService:
             if not any([ticket_id, description, resolution, root_cause]):
                 continue
 
+            # ✅ For open tickets — show in results but blank resolution + confidence
+            open_statuses = {
+                "to do", "open", "in progress", "in review",
+                "reopened", "pending", "new", "assigned", "on hold"
+            }
+            is_open = status.lower() in open_statuses
+            if is_open:
+                resolution = ""
+                root_cause = ""
+
             rows.append({
                 "source": source_type or source_name or metadata.get("collection", "unknown"),
                 "source_type": source_type or source_name or "unknown",
                 "ticket_id": ticket_id or metadata.get("source_name", ""),
                 "ticket_description": description or text[:120],
-                "resolution": resolution or "",
-                "root_cause": root_cause or "",
+                "resolution": resolution if not is_open else "",
+                "root_cause": root_cause if not is_open else "",
                 "issue_type": issue_type or source_type or "",
                 "status": status or "",
                 "priority": priority or "",
-                "confidence_score": self._normalize_score(score),
+                "confidence_score": self._normalize_score(score) if not is_open else None,
                 "source_url": metadata.get("source_url"),
             })
 

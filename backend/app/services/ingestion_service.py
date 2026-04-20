@@ -470,6 +470,7 @@ Question: {question}""",
             summary_value = summary.strip()
             detailed_value = detailed_description.strip()
             resolution_name_value = resolution_name.strip()
+            status_lower = str(status or "").lower().strip()  # ✅ define early
 
             source_type_lower = str(source_value).lower()
 
@@ -477,23 +478,29 @@ Question: {question}""",
             if source_type_lower == "jira":
                 description = summary_value or text[:200]
 
-                # For Jira: resolution text is in Detailed Description
-                # The "Resolution" field only contains Jira resolution name (e.g. "Done")
-                # Comments contain resolution added via API close (e.g. "Ticket closed via API. Reason: ...")
                 jira_status_words = {"done", "fixed", "won't fix", "duplicate",
                                      "cannot reproduce", "incomplete", ""}
 
                 resolution = detailed_value or ""
 
-                # If Detailed Description is empty or just a status word, use comments
-                if not resolution or resolution.lower() in jira_status_words:
+                # Only use comments as resolution fallback for CLOSED tickets
+                # Open tickets should never show comments as resolution
+                is_closed = status_lower not in {
+                    "to do", "open", "in progress", "in review",
+                    "reopened", "pending", "new", "assigned", "on hold"
+                }
+
+                if is_closed and (not resolution or resolution.lower() in jira_status_words):
                     # Extract reason from comment: "Reason: <resolution text>"
                     reason_match = re.search(r"Reason:\s*(.+?)(?:\s*\||\s*$)", comments_raw, re.IGNORECASE)
                     if reason_match:
                         resolution = reason_match.group(1).strip()
                     elif comments_raw:
-                        # Use full comment if no Reason: prefix found
                         resolution = comments_raw.strip()
+
+                # If still just a status word, clear it
+                if resolution.lower() in jira_status_words:
+                    resolution = ""
 
             elif "sharepoint" in source_type_lower:
                 description = detailed_value or summary_value or text[:200]
@@ -531,16 +538,26 @@ Question: {question}""",
             if root_cause_match:
                 root_cause = root_cause_match.group(1).strip()
 
+            # ✅ For open tickets — include in results but blank resolution + confidence
+            open_statuses = {
+                "to do", "open", "in progress", "in review",
+                "reopened", "pending", "new", "assigned", "on hold"
+            }
+            is_open = status_lower in open_statuses
+            if is_open:
+                resolution = ""
+                root_cause = ""
+
             tickets.append({
                 "source": str(source_value or ""),
                 "ticket_id": str(ticket_id or ""),
                 "ticket_description": str(description or ""),
-                "resolution": str(resolution or ""),
-                "root_cause": str(root_cause or ""),
+                "resolution": str(resolution or "") if not is_open else "",
+                "root_cause": str(root_cause or "") if not is_open else "",
                 "issue_type": str(issue_type or ""),
                 "status": str(status or ""),
                 "priority": str(priority or ""),
-                "confidence_score": float(r.get("score") or 0),
+                "confidence_score": float(r.get("score") or 0) if not is_open else None,
                 "source_url": meta.get("source_url"),
             })
 

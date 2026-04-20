@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { ThemeContext } from '../context/ThemeContext'
-import { searchTickets, closeTicket } from '../api/chatApi'
+import { searchTickets, closeTicket, getClosedTickets } from '../api/chatApi'
 import RagSetupPage from "./RagSetupPage";
 import '../App.css'
 
@@ -72,8 +72,32 @@ function ProgressBar({ loading }) {
   )
 }
 
-function CloseTicketForm({ resolution, onConfirm, onCancel, closing }) {
+function CloseTicketForm({ onConfirm, onCancel, closing }) {
   const [ticketId, setTicketId] = useState('')
+  const [resolution, setResolution] = useState('')
+  const [closedTickets, setClosedTickets] = useState([])
+  const [loadingClosed, setLoadingClosed] = useState(true)
+  const [selectedClosed, setSelectedClosed] = useState('')
+
+  useEffect(() => {
+    getClosedTickets('client-a')
+      .then(data => setClosedTickets(data.tickets || []))
+      .catch(() => setClosedTickets([]))
+      .finally(() => setLoadingClosed(false))
+  }, [])
+
+  const handleDropdownChange = (e) => {
+    const val = e.target.value
+    setSelectedClosed(val)
+    if (val) {
+      const found = closedTickets.find(t => t.ticket_id === val)
+      setResolution(found?.resolution || found?.reason || '')
+    } else {
+      setResolution('')
+    }
+  }
+
+  const canSubmit = ticketId.trim() && resolution && !closing
 
   return (
     <div style={{
@@ -83,21 +107,18 @@ function CloseTicketForm({ resolution, onConfirm, onCancel, closing }) {
     }}>
       <div style={{
         background: '#fff', borderRadius: '10px', padding: '28px 32px',
-        width: '460px', boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+        width: '500px', boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
       }}>
         <h3 style={{ margin: '0 0 6px', color: '#1e293b', fontSize: '17px' }}>
           🔒 Close Open Ticket
         </h3>
         <p style={{ margin: '0 0 20px', color: '#64748b', fontSize: '13px' }}>
-          Enter the ID of the open ticket you want to close using this resolution.
+          Enter the open ticket ID and select a resolution from a previously closed ticket.
         </p>
 
-        {/* Ticket ID input */}
+        {/* Open Ticket ID */}
         <div style={{ marginBottom: '16px' }}>
-          <label style={{
-            display: 'block', fontSize: '13px', fontWeight: '600',
-            color: '#374151', marginBottom: '6px',
-          }}>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
             Open Ticket ID <span style={{ color: '#ef4444' }}>*</span>
           </label>
           <input
@@ -109,58 +130,70 @@ function CloseTicketForm({ resolution, onConfirm, onCancel, closing }) {
             style={{
               width: '100%', padding: '9px 12px', borderRadius: '6px',
               border: '1.5px solid #cbd5e1', fontSize: '14px',
-              outline: 'none', boxSizing: 'border-box',
-              color: '#1e293b',
+              outline: 'none', boxSizing: 'border-box', color: '#1e293b',
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && ticketId.trim()) onConfirm(ticketId.trim())
-              if (e.key === 'Escape') onCancel()
-            }}
+            onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
           />
         </div>
 
-        {/* Resolution — read only, from selected row */}
+        {/* Closed Ticket Dropdown */}
+        <div style={{ marginBottom: '16px' }}>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+            Select Resolution from Closed Ticket <span style={{ color: '#ef4444' }}>*</span>
+          </label>
+          {loadingClosed ? (
+            <div style={{ fontSize: '13px', color: '#94a3b8' }}>Loading closed tickets...</div>
+          ) : (
+            <select
+              value={selectedClosed}
+              onChange={handleDropdownChange}
+              style={{
+                width: '100%', padding: '9px 12px', borderRadius: '6px',
+                border: '1.5px solid #cbd5e1', fontSize: '13px',
+                color: '#1e293b', background: '#fff', boxSizing: 'border-box', outline: 'none',
+              }}
+            >
+              <option value="">— Select a closed ticket —</option>
+              {closedTickets.length === 0 && <option disabled>No closed tickets found</option>}
+              {closedTickets.map((t) => (
+                <option key={t.ticket_id} value={t.ticket_id}>
+                  {t.ticket_id} — {(t.resolution || t.reason || 'No resolution').slice(0, 60)}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* Resolution — read only, auto-filled from dropdown */}
         <div style={{ marginBottom: '22px' }}>
-          <label style={{
-            display: 'block', fontSize: '13px', fontWeight: '600',
-            color: '#374151', marginBottom: '6px',
-          }}>
-            Resolution <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 400 }}>(from selected row)</span>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
+            Resolution{' '}
+            <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 400 }}>(auto-filled from selected ticket)</span>
           </label>
           <div style={{
             padding: '9px 12px', borderRadius: '6px',
             border: '1.5px solid #e2e8f0', background: '#f8fafc',
-            fontSize: '13px', color: '#475569', minHeight: '40px',
-            lineHeight: '1.5',
+            fontSize: '13px', color: resolution ? '#475569' : '#94a3b8',
+            minHeight: '40px', lineHeight: '1.5',
           }}>
-            {resolution || '—'}
+            {resolution || 'Select a closed ticket above'}
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-          <button
-            onClick={onCancel}
-            disabled={closing}
-            style={{
-              padding: '8px 20px', borderRadius: '6px',
-              border: '1px solid #cbd5e1', background: '#fff',
-              color: '#475569', cursor: 'pointer',
-              fontSize: '14px', fontWeight: '500',
-            }}
-          >
+          <button onClick={onCancel} disabled={closing}
+            style={{ padding: '8px 20px', borderRadius: '6px', border: '1px solid #cbd5e1', background: '#fff', color: '#475569', cursor: 'pointer', fontSize: '14px', fontWeight: '500' }}>
             Cancel
           </button>
           <button
-            onClick={() => ticketId.trim() && onConfirm(ticketId.trim())}
-            disabled={closing || !ticketId.trim()}
+            onClick={() => canSubmit && onConfirm(ticketId.trim(), resolution)}
+            disabled={!canSubmit}
             style={{
               padding: '8px 20px', borderRadius: '6px', border: 'none',
-              background: closing || !ticketId.trim() ? '#93c5fd' : '#2563eb',
-              color: '#fff',
-              cursor: closing || !ticketId.trim() ? 'not-allowed' : 'pointer',
+              background: canSubmit ? '#2563eb' : '#93c5fd',
+              color: '#fff', cursor: canSubmit ? 'pointer' : 'not-allowed',
               fontSize: '14px', fontWeight: '600',
-            }}
-          >
+            }}>
             {closing ? 'Closing...' : 'Close Ticket'}
           </button>
         </div>
@@ -170,35 +203,33 @@ function CloseTicketForm({ resolution, onConfirm, onCancel, closing }) {
 }
 
 function ResultsTable({ tickets }) {
-  const [selectedRow, setSelectedRow] = useState(null)  // row whose resolution is selected
+  const [showForm, setShowForm] = useState(false)
   const [closing, setClosing] = useState(false)
   const [toast, setToast] = useState(null)
 
   if (!tickets?.length) return null
+
+  const closedStatuses = new Set(['done', 'closed', 'resolved', 'fixed'])
 
   const showToast = (msg, success = true) => {
     setToast({ msg, success })
     setTimeout(() => setToast(null), 3500)
   }
 
-  const handleCloseConfirm = async (openTicketId) => {
-    if (!selectedRow) return
+  const handleCloseConfirm = async (openTicketId, resolution) => {
     setClosing(true)
     try {
       await closeTicket({
         tenant_id: 'client-a',
         ticket_id: openTicketId,
-        reason: selectedRow.resolution || 'Closed via Ticket Resolution System.',
+        reason: resolution,
       })
       showToast(`✅ Ticket ${openTicketId} closed successfully.`, true)
     } catch (err) {
-      showToast(
-        `❌ Failed: ${err?.response?.data?.detail || err.message}`,
-        false
-      )
+      showToast(`❌ Failed: ${err?.response?.data?.detail || err.message}`, false)
     } finally {
       setClosing(false)
-      setSelectedRow(null)
+      setShowForm(false)
     }
   }
 
@@ -220,11 +251,10 @@ function ResultsTable({ tickets }) {
       )}
 
       {/* Close form dialog */}
-      {selectedRow && (
+      {showForm && (
         <CloseTicketForm
-          resolution={selectedRow.resolution}
           onConfirm={handleCloseConfirm}
-          onCancel={() => setSelectedRow(null)}
+          onCancel={() => setShowForm(false)}
           closing={closing}
         />
       )}
@@ -263,18 +293,24 @@ function ResultsTable({ tickets }) {
                     : '-'}
                 </td>
                 <td>
-                  <button
-                    onClick={() => setSelectedRow(t)}
-                    style={{
-                      padding: '4px 12px', borderRadius: '5px',
-                      border: '1px solid #2563eb', background: '#eff6ff',
-                      color: '#2563eb', cursor: 'pointer',
-                      fontSize: '12px', fontWeight: '600',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    🔒 Close
-                  </button>
+                  {!closedStatuses.has((t.status || '').toLowerCase()) ? (
+                    <button
+                      onClick={() => setShowForm(true)}
+                      style={{
+                        padding: '4px 12px', borderRadius: '5px',
+                        border: '1px solid #2563eb', background: '#eff6ff',
+                        color: '#2563eb', cursor: 'pointer',
+                        fontSize: '12px', fontWeight: '600',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      🔒 Close
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '12px', color: '#64748b', fontStyle: 'italic' }}>
+                      Closed
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}

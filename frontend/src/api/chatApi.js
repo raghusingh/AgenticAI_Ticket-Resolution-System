@@ -28,3 +28,8 @@ export async function closeTicket(payload) {
   const res = await client.post("/api/v1/tickets/close", payload)
   return res.data
 }
+
+export async function getClosedTickets(tenantId) {
+  const res = await client.get(`/api/v1/tickets/closed/${tenantId}`)
+  return res.data
+}

@@ -9,9 +9,10 @@ POST /api/v1/tickets/close
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from app.services.ticket_lifecycle.close_ticket_service import CloseTicketService
+from app.repositories.ticket_lifecycle_repository import TicketLifecycleRepository
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["Tickets"])
 
@@ -63,5 +64,19 @@ def close_ticket(request: CloseTicketRequest):
 
     except HTTPException:
         raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/closed/{tenant_id}")
+def get_closed_tickets(tenant_id: str):
+    """
+    Returns all closed tickets for a tenant.
+    Used to populate the resolution dropdown in the UI.
+    """
+    try:
+        repo = TicketLifecycleRepository()
+        tickets = repo.get_closed_tickets(tenant_id)
+        return {"tenant_id": tenant_id, "tickets": tickets}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
