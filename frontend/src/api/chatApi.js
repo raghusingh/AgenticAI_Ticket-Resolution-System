@@ -33,3 +33,8 @@ export async function getClosedTickets(tenantId) {
   const res = await client.get(`/api/v1/tickets/closed/${tenantId}`)
   return res.data
 }
+
+export async function triggerIngestion(tenantId) {
+  const res = await client.post(`/api/v1/admin/rag-config/ingest/${tenantId}`)
+  return res.data
+}

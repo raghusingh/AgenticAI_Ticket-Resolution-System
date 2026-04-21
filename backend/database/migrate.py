@@ -7,7 +7,8 @@ Run once: python database/migrate.py
 import sqlite3
 import os
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "ticket.db")
+# Always resolve to backend/database/ticket.db regardless of where script is called from
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ticket.db")
 
 
 def migrate():

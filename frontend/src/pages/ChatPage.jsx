@@ -1,6 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react'
 import { ThemeContext } from '../context/ThemeContext'
-import { searchTickets, closeTicket, getClosedTickets } from '../api/chatApi'
+import { searchTickets, closeTicket, triggerIngestion } from '../api/chatApi'
 import RagSetupPage from "./RagSetupPage";
 import '../App.css'
 
@@ -72,32 +72,28 @@ function ProgressBar({ loading }) {
   )
 }
 
-function CloseTicketForm({ onConfirm, onCancel, closing }) {
-  const [ticketId, setTicketId] = useState('')
+function CloseTicketForm({ onConfirm, onCancel, closing, tickets = [], selectedTicket = null }) {
   const [resolution, setResolution] = useState('')
-  const [closedTickets, setClosedTickets] = useState([])
-  const [loadingClosed, setLoadingClosed] = useState(true)
   const [selectedClosed, setSelectedClosed] = useState('')
 
-  useEffect(() => {
-    getClosedTickets('client-a')
-      .then(data => setClosedTickets(data.tickets || []))
-      .catch(() => setClosedTickets([]))
-      .finally(() => setLoadingClosed(false))
-  }, [])
+  // Use closed tickets from the already-loaded search results
+  const closedStatuses = new Set(['done', 'closed', 'resolved', 'fixed'])
+  const closedTickets = tickets.filter(t =>
+    closedStatuses.has((t.status || '').toLowerCase()) && t.resolution
+  )
 
   const handleDropdownChange = (e) => {
     const val = e.target.value
     setSelectedClosed(val)
     if (val) {
       const found = closedTickets.find(t => t.ticket_id === val)
-      setResolution(found?.resolution || found?.reason || '')
+      setResolution(found?.resolution || '')
     } else {
       setResolution('')
     }
   }
 
-  const canSubmit = ticketId.trim() && resolution && !closing
+  const canSubmit = selectedTicket?.ticket_id && resolution && !closing
 
   return (
     <div style={{
@@ -116,24 +112,23 @@ function CloseTicketForm({ onConfirm, onCancel, closing }) {
           Enter the open ticket ID and select a resolution from a previously closed ticket.
         </p>
 
-        {/* Open Ticket ID */}
+        {/* Selected Ticket — read only label */}
         <div style={{ marginBottom: '16px' }}>
           <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-            Open Ticket ID <span style={{ color: '#ef4444' }}>*</span>
+            Ticket to Close
           </label>
-          <input
-            type="text"
-            placeholder="e.g. SCRUM-25"
-            value={ticketId}
-            onChange={(e) => setTicketId(e.target.value)}
-            autoFocus
-            style={{
-              width: '100%', padding: '9px 12px', borderRadius: '6px',
-              border: '1.5px solid #cbd5e1', fontSize: '14px',
-              outline: 'none', boxSizing: 'border-box', color: '#1e293b',
-            }}
-            onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
-          />
+          <div style={{
+            padding: '9px 12px', borderRadius: '6px',
+            border: '1.5px solid #e2e8f0', background: '#f0f4ff',
+            fontSize: '14px', fontWeight: '600', color: '#2563eb',
+          }}>
+            {selectedTicket?.ticket_id || '—'}
+            {selectedTicket?.ticket_description && (
+              <span style={{ fontWeight: '400', color: '#475569', marginLeft: '8px', fontSize: '13px' }}>
+                — {selectedTicket.ticket_description.slice(0, 60)}{selectedTicket.ticket_description.length > 60 ? '...' : ''}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Closed Ticket Dropdown */}
@@ -141,10 +136,7 @@ function CloseTicketForm({ onConfirm, onCancel, closing }) {
           <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
             Select Resolution from Closed Ticket <span style={{ color: '#ef4444' }}>*</span>
           </label>
-          {loadingClosed ? (
-            <div style={{ fontSize: '13px', color: '#94a3b8' }}>Loading closed tickets...</div>
-          ) : (
-            <select
+          <select
               value={selectedClosed}
               onChange={handleDropdownChange}
               style={{
@@ -155,13 +147,12 @@ function CloseTicketForm({ onConfirm, onCancel, closing }) {
             >
               <option value="">— Select a closed ticket —</option>
               {closedTickets.length === 0 && <option disabled>No closed tickets found</option>}
-              {closedTickets.map((t) => (
-                <option key={t.ticket_id} value={t.ticket_id}>
-                  {t.ticket_id} — {(t.resolution || t.reason || 'No resolution').slice(0, 60)}
+              {closedTickets.map((t, idx) => (
+                <option key={`${t.ticket_id}-${idx}`} value={t.ticket_id}>
+                  {t.ticket_id} — {(t.resolution || '').slice(0, 50)}{t.resolution && t.resolution.length > 50 ? '...' : ''} — Conf: {typeof t.confidence_score === 'number' ? t.confidence_score.toFixed(3) : '-'}
                 </option>
               ))}
             </select>
-          )}
         </div>
 
         {/* Resolution — read only, auto-filled from dropdown */}
@@ -186,7 +177,7 @@ function CloseTicketForm({ onConfirm, onCancel, closing }) {
             Cancel
           </button>
           <button
-            onClick={() => canSubmit && onConfirm(ticketId.trim(), resolution)}
+            onClick={() => canSubmit && onConfirm(selectedTicket.ticket_id, resolution)}
             disabled={!canSubmit}
             style={{
               padding: '8px 20px', borderRadius: '6px', border: 'none',
@@ -202,8 +193,8 @@ function CloseTicketForm({ onConfirm, onCancel, closing }) {
   )
 }
 
-function ResultsTable({ tickets }) {
-  const [showForm, setShowForm] = useState(false)
+function ResultsTable({ tickets, onRefresh }) {
+  const [selectedRow, setSelectedRow] = useState(null)
   const [closing, setClosing] = useState(false)
   const [toast, setToast] = useState(null)
 
@@ -219,17 +210,37 @@ function ResultsTable({ tickets }) {
   const handleCloseConfirm = async (openTicketId, resolution) => {
     setClosing(true)
     try {
+      // Step 1: Close the ticket in Jira + DB
       await closeTicket({
         tenant_id: 'client-a',
         ticket_id: openTicketId,
         reason: resolution,
       })
-      showToast(`✅ Ticket ${openTicketId} closed successfully.`, true)
+      showToast(`✅ Ticket ${openTicketId} closed. Updating knowledge base...`, true)
+      setSelectedRow(null)
+
+      // Step 2: Re-run ingestion so FAISS reflects the closure
+      try {
+        await triggerIngestion('client-a')
+        showToast(`✅ Knowledge base updated. Refreshing table...`, true)
+
+        // Step 3: Small delay to ensure ingestion is fully written before re-search
+        await new Promise(resolve => setTimeout(resolve, 1500))
+
+        // Step 4: Re-run the last search so UI reflects updated results
+        if (onRefresh) {
+          await onRefresh()
+          showToast(`✅ Results refreshed.`, true)
+        }
+      } catch (ingestErr) {
+        console.warn('Ingestion failed:', ingestErr)
+        showToast(`⚠️ Ticket closed but knowledge base update failed. Re-search manually.`, false)
+      }
+
     } catch (err) {
       showToast(`❌ Failed: ${err?.response?.data?.detail || err.message}`, false)
     } finally {
       setClosing(false)
-      setShowForm(false)
     }
   }
 
@@ -251,11 +262,13 @@ function ResultsTable({ tickets }) {
       )}
 
       {/* Close form dialog */}
-      {showForm && (
+      {selectedRow && (
         <CloseTicketForm
           onConfirm={handleCloseConfirm}
-          onCancel={() => setShowForm(false)}
+          onCancel={() => setSelectedRow(null)}
           closing={closing}
+          tickets={tickets}
+          selectedTicket={selectedRow}
         />
       )}
 
@@ -295,7 +308,7 @@ function ResultsTable({ tickets }) {
                 <td>
                   {!closedStatuses.has((t.status || '').toLowerCase()) ? (
                     <button
-                      onClick={() => setShowForm(true)}
+                      onClick={() => setSelectedRow(t)}
                       style={{
                         padding: '4px 12px', borderRadius: '5px',
                         border: '1px solid #2563eb', background: '#eff6ff',
@@ -321,7 +334,7 @@ function ResultsTable({ tickets }) {
   )
 }
 
-function ChatWindow({ messages, loading }) {
+function ChatWindow({ messages, loading, onRefresh }) {
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -334,7 +347,7 @@ function ChatWindow({ messages, loading }) {
         <div key={msg.id} className={`message-row ${msg.role}`}>
           <div className="message-bubble">
             {msg.type === 'tickets' ? (
-              <ResultsTable tickets={msg.tickets} />
+              <ResultsTable tickets={msg.tickets} onRefresh={onRefresh} />
             ) : (
               <div>{msg.content}</div>
             )}
@@ -383,6 +396,7 @@ export default function ChatPage({ user, onLogout }) {
     const [chats, setChats] = useState([createEmptyChat(1)])
     const [activeChatId, setActiveChatId] = useState(null)
     const [view, setView] = useState("chat")
+    const [lastQuery, setLastQuery] = useState('')
 
   useEffect(() => {
     if (chats.length && !activeChatId) {
@@ -417,6 +431,7 @@ export default function ChatPage({ user, onLogout }) {
     if (!query.trim() || !activeChatId) return
 
     const userQuestion = query.trim()
+    setLastQuery(userQuestion)  // ✅ track for refresh after close
 
     updateActiveChatMessages((prev) => [
       ...prev,
@@ -471,7 +486,7 @@ export default function ChatPage({ user, onLogout }) {
             id: Date.now() + 3,
             role: 'assistant',
             type: 'text',
-            content: 'No results found.',
+            content: 'No matching resolved tickets found in the knowledge base for this query.',
           })
         }
 
@@ -492,6 +507,46 @@ export default function ChatPage({ user, onLogout }) {
     }
   }
 
+  // Re-run last search after ticket close + ingestion
+  const handleRefresh = async () => {
+    if (!lastQuery || !activeChatId) return
+    setLoading(true)
+    try {
+      const data = await searchTickets({
+        tenant_id: 'client-a',
+        question: lastQuery,
+        generate_answer: false,
+      })
+      const ticketRows = data?.tickets?.length > 0
+        ? data.tickets
+        : Array.isArray(data?.sources) ? data.sources : []
+
+      updateActiveChatMessages((prev) => {
+        // Remove last tickets message and replace with fresh results
+        const withoutLastTickets = [...prev]
+        for (let i = withoutLastTickets.length - 1; i >= 0; i--) {
+          if (withoutLastTickets[i].type === 'tickets') {
+            withoutLastTickets.splice(i, 1)
+            break
+          }
+        }
+        if (ticketRows.length) {
+          withoutLastTickets.push({
+            id: Date.now(),
+            role: 'assistant',
+            type: 'tickets',
+            tickets: ticketRows,
+          })
+        }
+        return withoutLastTickets
+      })
+    } catch (err) {
+      console.error('Refresh failed:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -505,7 +560,7 @@ export default function ChatPage({ user, onLogout }) {
       <Header user={user} onLogout={onLogout} view={view} setView={setView} />
       {view === "chat" ? (
         <>
-          <ChatWindow messages={activeChat?.messages || []} loading={loading} />
+          <ChatWindow messages={activeChat?.messages || []} loading={loading} onRefresh={handleRefresh} />
           <SearchBox
             value={query}
             setValue={setQuery}

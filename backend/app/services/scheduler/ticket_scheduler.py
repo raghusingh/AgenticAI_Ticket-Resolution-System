@@ -31,6 +31,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from app.core.db_path import get_db_path
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -176,10 +177,10 @@ def _process_new_ticket(
     print(f"{'='*60}")
 
     try:
-        # ── 🤖 LangGraph Agent ────────────────────────────────────────────
-        from app.services.agent.ticket_agent import run_ticket_agent
+        # ── 🤖 Multi-Agent System ─────────────────────────────────────────
+        from app.services.agent.agents.coordinator_agent import run_multi_agent_system
 
-        result = run_ticket_agent(
+        result = run_multi_agent_system(
             tenant_id      = tenant_id,
             ticket_id      = ticket_id,
             source_type    = source_type,
@@ -187,22 +188,24 @@ def _process_new_ticket(
             assignee_email = assignee_email,
         )
 
-        print(f"[Scheduler] 🤖 Agent completed:")
-        print(f"[Scheduler]    Decision    : {result['decision']}")
-        print(f"[Scheduler]    Confidence  : {result['best_confidence']:.4f}")
-        print(f"[Scheduler]    Steps taken : {result['steps_taken']}")
-        print(f"[Scheduler]    Summary     : {result['summary']}")
-        for step in result["action_history"]:
-            print(f"[Scheduler]      → {step['tool']} ({step['status']})")
+        print(f"[Scheduler] 🤖 Multi-agent system completed:")
+        print(f"[Scheduler]    Ingestion   : {result['ingestion_status']}")
+        print(f"[Scheduler]    Resolution  : {result['resolution_status']} "
+              f"(conf={result['best_confidence']:.4f})")
+        print(f"[Scheduler]    Notification: {result['notification_status']}")
+        print(f"[Scheduler]    Closure     : {result['closure_decision']}")
+        print(f"[Scheduler]    Summary     : {result['final_summary']}")
+        if result.get('errors'):
+            print(f"[Scheduler]    Errors      : {result['errors']}")
 
     except ImportError:
         # ── 🔁 Fallback: legacy hardcoded pipeline ────────────────────────
-        print(f"[Scheduler] ⚠️  LangGraph not available — using legacy pipeline")
+        print(f"[Scheduler] ⚠️  Multi-agent not available — using legacy pipeline")
         _process_new_ticket_legacy(
             tenant_id, source_type, ticket_id, description, assignee_email
         )
     except Exception as exc:
-        print(f"[Scheduler] ❌ Agent failed for {ticket_id}: {exc}")
+        print(f"[Scheduler] ❌ Multi-agent failed for {ticket_id}: {exc}")
         traceback.print_exc()
         print(f"[Scheduler] 🔁 Falling back to legacy pipeline...")
         _process_new_ticket_legacy(

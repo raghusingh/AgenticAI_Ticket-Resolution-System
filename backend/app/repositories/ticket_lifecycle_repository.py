@@ -12,17 +12,8 @@ class TicketLifecycleRepository:
     """
 
     def __init__(self):
-        # Always resolve path relative to THIS file, not the caller's working directory
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Adjust the relative path below to point to your actual DB file
-        self.db_path = os.path.normpath(
-            os.path.join(base_dir, '..', '..', '..', 'database', 'ticket.db')
-        )
-        
-        # Auto-create the directory if it doesn't exist
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        
+        from app.core.db_path import get_db_path
+        self.db_path = get_db_path()
         print(f"[TicketLifecycleRepository] DB path: {self.db_path}")
         print(f"[TicketLifecycleRepository] DB exists: {os.path.exists(self.db_path)}")
 

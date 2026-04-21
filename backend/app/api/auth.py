@@ -1,8 +1,10 @@
 import sqlite3
 import uuid
+import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import hashlib
+from app.core.db_path import get_db_path
 
 router = APIRouter(prefix="/api/v1/login", tags=["login"])
 
@@ -13,7 +15,7 @@ class LoginRequest(BaseModel):
 
 
 def get_conn():
-    return sqlite3.connect("database/ticket.db")
+    return sqlite3.connect(get_db_path())
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
