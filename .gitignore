@@ -40,7 +40,7 @@ Thumbs.db
 *.pem
 
 # Config file
-backend/config_store/client-a_rag_config.json
+#backend/config_store/client-a_rag_config.json
 
 # Environment file
 backend/.env
