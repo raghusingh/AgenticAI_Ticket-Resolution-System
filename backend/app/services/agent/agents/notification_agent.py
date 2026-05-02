@@ -81,6 +81,21 @@ def _send_notification(state: TicketState) -> dict:
         from app.schemas.notification import NotifyRequest
         from app.services.notification.notification_service import NotificationService
 
+        resolved_tickets = state.get("rag_tickets", [])
+
+        # Extra safety — ensure only tickets with resolution are sent
+        resolved_tickets = [
+            t for t in resolved_tickets
+            if str(t.get("resolution") or "").strip()
+        ]
+
+        if not resolved_tickets:
+            return {
+                "status": "skipped",
+                "channel": "none",
+                "message": "No resolved tickets to include in email — skipping notification.",
+            }
+
         result = NotificationService().notify_on_ticket_created(
             NotifyRequest(
                 tenant_id=state["tenant_id"],
@@ -89,7 +104,7 @@ def _send_notification(state: TicketState) -> dict:
                 description=state["description"],
                 assignee_email=state.get("assignee_email"),
                 top_k=5,
-                prefetched_tickets=state.get("rag_tickets", []),
+                prefetched_tickets=resolved_tickets,
             )
         )
         return {

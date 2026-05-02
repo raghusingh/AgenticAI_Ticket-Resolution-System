@@ -147,8 +147,6 @@ def _get_raw_config(tenant_id: str) -> Optional[Dict]:
 
     sources = raw.get("data_sources", [])
     print(f"[Scheduler] data_sources count: {len(sources)}")
-    for s in sources:
-        print(f"[Scheduler]   -> source_type={s.get('source_type')!r}  is_enabled={s.get('is_enabled')!r}")
 
     return raw
 

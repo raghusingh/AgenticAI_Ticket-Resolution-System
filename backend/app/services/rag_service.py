@@ -42,8 +42,14 @@ class RAGService:
         ingestion_service = IngestionService(repo)
         retrieval_result = ingestion_service.query(tenant_id, question)
 
-        docs = retrieval_result.get("tickets", [])[:top_k]
-        tickets = self._build_ticket_rows(docs)
+        # ✅ Use raw results (sources) not pre-filtered tickets
+        # so we can build rows ourselves with full control
+        raw_docs = retrieval_result.get("results", [])[:top_k]
+        all_tickets = self._build_ticket_rows(raw_docs)
+
+        # ✅ LLM re-ranking — filter ALL irrelevant tickets
+        # including open ones that don't match the query
+        tickets = self._rerank_tickets(question, all_tickets)
 
         summary_prompt = self._build_summary_prompt(question, tickets)
         answer = self.llm_provider.generate(summary_prompt, context=tickets)
@@ -51,11 +57,71 @@ class RAGService:
         return {
             "answer": answer,
             "tickets": tickets,
-            "sources": docs,
+            "sources": raw_docs,
             "llm_model": self.llm_provider.model_name(),
             "embedding_model": self.embedding_provider.model_name(),
             "vector_store": "faiss",
         }
+
+    def _rerank_tickets(self, question: str, tickets: list) -> list:
+        """
+        Use LLM to filter out tickets not relevant to the question.
+        Only keeps tickets where the problem type genuinely matches.
+        """
+        if not tickets:
+            return []
+
+        import json as _json
+
+        ticket_list = []
+        for i, t in enumerate(tickets):
+            ticket_list.append({
+                "index": i,
+                "ticket_id": t.get("ticket_id"),
+                "description": (t.get("ticket_description") or "")[:150],
+                "resolution": (t.get("resolution") or "")[:150],
+                "status": t.get("status"),
+            })
+
+        prompt = (
+            f'You are a strict ticket relevance filter.\n\n'
+            f'User query: "{question}"\n\n'
+            f'Evaluate each candidate ticket below.\n'
+            f'Keep a ticket ONLY if its description directly relates to the SAME type of problem.\n'
+            f'Apply this rule to BOTH open and closed tickets.\n\n'
+            f'Examples of what to REJECT:\n'
+            f'- User asks about "500 error" → reject "CPU high", "API failure", "Payment Gateway"\n'
+            f'- User asks about "login issue" → reject "database timeout", "network outage"\n\n'
+            f'Candidates:\n{_json.dumps(ticket_list, indent=2)}\n\n'
+            f'Return JSON only:\n{{"relevant_indices": [list of integer indices]}}'
+        )
+
+        try:
+            raw = self.llm_provider.generate(prompt, context=[])
+            # Clean up response — strip markdown, whitespace
+            raw = raw.strip()
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
+
+            # Find JSON object in response
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                raw = raw[start:end]
+
+            result = _json.loads(raw)
+            relevant_indices = result.get("relevant_indices", [])
+            filtered = [tickets[i] for i in relevant_indices if isinstance(i, int) and i < len(tickets)]
+            print(f"[RAGService] Re-ranking: {len(tickets)} → {len(filtered)} relevant")
+            print(f"[RAGService] Kept indices: {relevant_indices}")
+            # Only fall back if LLM completely failed (exception), not if it returned empty list
+            return filtered
+        except Exception as exc:
+            print(f"[RAGService] Re-ranking failed: {exc} — returning all")
+            return tickets
 
     def _build_ticket_rows(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -78,13 +144,44 @@ class RAGService:
             detailed_description = self._extract_field(text, "Detailed Description")
             resolution_notes = self._extract_field(text, "Resolution Notes")
             root_cause = self._extract_field(text, "Root Cause")
+            comments_raw = self._extract_field(text, "Comments")
 
             description = summary or detailed_description
-            resolution = (
-                resolution_notes
-                or self._extract_field(text, "Resolution")
-                or self._extract_block(text, "Description")   # ✅ Jira fallback
-            )
+
+            # ── Resolution extraction priority ───────────────────────────────
+            jira_status_words = {
+                "done", "fixed", "won't fix", "duplicate",
+                "cannot reproduce", "incomplete", ""
+            }
+
+            # 1. Try Resolution Notes first (SharePoint)
+            resolution = resolution_notes or ""
+
+            # 2. Try Resolution field — skip if it's just a Jira status word
+            if not resolution:
+                raw_res = self._extract_field(text, "Resolution")
+                if raw_res and raw_res.lower() not in jira_status_words:
+                    resolution = raw_res
+
+            # 3. Try extracting Reason from Comments field
+            if not resolution and comments_raw:
+                # Strip "Comments:" label and "[Author]:" prefix
+                cleaned = re.sub(r"^Comments:\s*", "", comments_raw.strip(), flags=re.IGNORECASE)
+                cleaned = re.sub(r"^\[[^\]]+\]:\s*", "", cleaned.strip())
+                # Extract "Reason: <text>" if present
+                reason_match = re.search(r"Reason:\s*(.+)", cleaned, re.IGNORECASE)
+                if reason_match:
+                    resolution = reason_match.group(1).strip()
+                elif cleaned and len(cleaned) > 10:
+                    resolution = cleaned
+
+            # 4. Final cleanup — strip any remaining Comments/author prefix
+            if resolution:
+                resolution = re.sub(r"^Comments:\s*", "", resolution.strip(), flags=re.IGNORECASE)
+                resolution = re.sub(r"^\[[^\]]+\]:\s*", "", resolution.strip())
+                reason_match = re.search(r"Reason:\s*(.+)", resolution, re.IGNORECASE)
+                if reason_match:
+                    resolution = reason_match.group(1).strip()
 
             root_cause = self._extract_field(text, "Root Cause")
 

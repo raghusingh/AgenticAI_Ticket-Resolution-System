@@ -13,7 +13,7 @@ function Header({ user, onLogout, view, setView }) {
   return (
     <div className="app-header">
       <div className="header-left">
-        <div className="app-title">Ticket Search Bot</div>
+        <div className="app-title">Ticket Resolution System</div>
       </div>
 
       <div className="header-right">
@@ -313,7 +313,7 @@ function ResultsTable({ tickets, onRefresh }) {
                         padding: '4px 12px', borderRadius: '5px',
                         border: '1px solid #2563eb', background: '#eff6ff',
                         color: '#2563eb', cursor: 'pointer',
-                        fontSize: '12px', fontWeight: '600',
+                        fontSize: '10px', fontWeight: '600',
                         whiteSpace: 'nowrap',
                       }}
                     >

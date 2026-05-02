@@ -363,6 +363,17 @@ class IngestionService:
 
         top_results = deduped[:top_k]
 
+        # ✅ Filter by FAISS L2 score threshold
+        # Lower L2 score = more similar. Score > 1.5 means too dissimilar → filter out
+        # This prevents irrelevant tickets from showing up in results
+        SCORE_THRESHOLD = float(
+            config.get("models", {}).get("score_threshold", 1.5)
+        )
+        filtered_results = [r for r in top_results if float(r.get("score") or 0) <= SCORE_THRESHOLD]
+        print(f"[IngestionService] Scores: {[round(float(r.get('score',0)),4) for r in top_results]}")
+        print(f"[IngestionService] After threshold ({SCORE_THRESHOLD}): {len(filtered_results)} result(s)")
+        top_results = filtered_results if filtered_results else []
+
         def compact_context(text: str) -> str:
             lines = []
             for field in [
@@ -496,7 +507,19 @@ Question: {question}""",
                     if reason_match:
                         resolution = reason_match.group(1).strip()
                     elif comments_raw:
-                        resolution = comments_raw.strip()
+                        # Strip "Comments:" label and author prefix "[Name]: "
+                        cleaned = re.sub(r"^Comments:\s*", "", comments_raw.strip(), flags=re.IGNORECASE)
+                        cleaned = re.sub(r"^\[[^\]]+\]:\s*", "", cleaned.strip())
+                        if cleaned and len(cleaned) > 10:
+                            resolution = cleaned
+
+                # If resolution starts with Comments/author prefix — strip it
+                if resolution:
+                    resolution = re.sub(r"^Comments:\s*", "", resolution.strip(), flags=re.IGNORECASE)
+                    resolution = re.sub(r"^\[[^\]]+\]:\s*", "", resolution.strip())
+                    reason_match = re.search(r"Reason:\s*(.+)", resolution, re.IGNORECASE)
+                    if reason_match:
+                        resolution = reason_match.group(1).strip()
 
                 # If still just a status word, clear it
                 if resolution.lower() in jira_status_words:

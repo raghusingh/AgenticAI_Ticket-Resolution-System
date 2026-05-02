@@ -157,23 +157,35 @@ def evaluate_node(state: TicketState) -> TicketState:
         evaluation = {
             "best_ticket_id": tickets[0].get("ticket_id", ""),
             "best_resolution": tickets[0].get("resolution", ""),
-            "confidence": float(tickets[0].get("confidence_score", 0)),
+            "confidence": float(tickets[0].get("confidence_score") or 0),
             "quality": "medium",
             "reasoning": "Fallback to top result",
         }
 
     print(f"[ResolutionAgent] Best match: {evaluation.get('best_ticket_id')} | "
-          f"quality={evaluation.get('quality')} | conf={evaluation.get('confidence'):.4f}")
+          f"quality={evaluation.get('quality')} | conf={float(evaluation.get('confidence') or 0):.4f}")
     print(f"[ResolutionAgent] Reasoning: {evaluation.get('reasoning')}")
 
     steps = state.get("steps_completed", []) + ["resolution"]
+
+    # ✅ Only pass closed tickets with resolution to notification agent
+    # Open tickets have no resolution so they produce blank email rows
+    closed_statuses = {"done", "closed", "resolved", "fixed", "complete", "completed"}
+    resolved_tickets = [
+        t for t in tickets
+        if str(t.get("status") or "").lower() in closed_statuses
+        and str(t.get("resolution") or "").strip()
+    ]
+    print(f"[ResolutionAgent] Tickets for email: {len(resolved_tickets)} resolved "
+          f"(filtered from {len(tickets)} total)")
+
     return {
         **state,
-        "rag_tickets": tickets,
-        "best_confidence": float(evaluation.get("confidence", 0)),
+        "rag_tickets": resolved_tickets,  # ✅ only closed tickets with resolution
+        "best_confidence": float(evaluation.get("confidence") or 0),
         "best_resolution": evaluation.get("best_resolution", ""),
         "best_ticket_id": evaluation.get("best_ticket_id", ""),
-        "resolution_status": "found" if tickets else "not_found",
+        "resolution_status": "found" if resolved_tickets else "not_found",
         "steps_completed": steps,
     }
 

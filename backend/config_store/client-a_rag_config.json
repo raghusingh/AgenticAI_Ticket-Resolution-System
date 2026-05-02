@@ -8,7 +8,8 @@
     "temperature": 0.1,
     "top_k": 5,
     "max_tokens": 1000,
-    "min_confidence": 0.5
+    "min_confidence": 0.5,
+    "score_threshold": 1.5
   },
   "data_sources": [
     {
@@ -64,7 +65,7 @@
     {
       "source_name": "Local SharePoint",
       "source_type": "sharepoint_local",
-      "source_url": "C:\\Users\\raghubirs\\Infinite Computer Solutions (India) Limited\\NCC- IPM Team - Test-Tickets",
+      "source_url": "C:\\Tech Stack\\Projects\\AI\\AgenticAI_Ticket-Resolution-System\\backend\\database\\NCC- IPM Team - Test-Tickets",
       "auth_type": "local",
       "chunk_size": 1000,
       "chunk_overlap": 150,

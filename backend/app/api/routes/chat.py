@@ -18,9 +18,19 @@ def chat(request: ChatRequest):
     if "models" in raw_config:
         models = raw_config.get("models", {})
         secrets = raw_config.get("secrets", {})
+        sources = raw_config.get("data_sources", [])
+
+        # Get correct collection name from first enabled source
+        collection = "KB_All"
+        for s in sources:
+            if s.get("is_enabled", True) and s.get("collection_name"):
+                collection = s["collection_name"]
+                break
+
+        tenant_id = raw_config.get("tenant_id", "")
 
         tenant_config = {
-            "tenant_id": raw_config.get("tenant_id"),
+            "tenant_id": tenant_id,
             "llm": {
                 "provider": (models.get("llm_provider") or "").lower(),
                 "model": models.get("llm_model_name"),
@@ -35,7 +45,7 @@ def chat(request: ChatRequest):
             },
             "vector_store": {
                 "provider": "faiss",
-                "index_path": "faiss_store/index",
+                "index_path": f"faiss_store/{tenant_id}_{collection}.index",  # ✅ correct path
             },
             "theme": raw_config.get("theme", {}),
         }

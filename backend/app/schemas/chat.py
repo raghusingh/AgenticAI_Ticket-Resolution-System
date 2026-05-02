@@ -9,13 +9,15 @@ class ChatRequest(BaseModel):
 
 
 class TicketRow(BaseModel):
+    source: str = ""
     ticket_id: str = ""
     ticket_description: str = ""
     resolution: str = ""
+    root_cause: str = ""
     issue_type: str = ""
     status: str = ""
     priority: str = ""
-    confidence_score: float = 0.0
+    confidence_score: Optional[float] = None   # ✅ None for open tickets
     source_url: Optional[str] = None
 
 
