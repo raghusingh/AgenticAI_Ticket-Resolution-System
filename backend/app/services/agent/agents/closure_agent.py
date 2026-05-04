@@ -109,16 +109,16 @@ def _escalate_ticket(tenant_id: str, ticket_id: str,
 
 # ── Agent nodes ───────────────────────────────────────────────────────────────
 
-def reason_node(state: TicketState) -> TicketState:
-    """LLM decides whether to close, escalate or skip."""
+def reason_and_act_node(state: TicketState) -> TicketState:
+    """LLM decides closure action, then immediately executes it."""
     print(f"[ClosureAgent] 🧠 Reasoning about closure decision...")
 
     context = {
         "ticket_id": state["ticket_id"],
         "description": state["description"][:200],
         "resolution_status": state.get("resolution_status"),
-        "best_confidence": state.get("best_confidence", 0),
-        "best_resolution": state.get("best_resolution", "")[:200],
+        "best_confidence": float(state.get("best_confidence") or 0),
+        "best_resolution": str(state.get("best_resolution") or "")[:200],
         "best_matched_ticket": state.get("best_ticket_id"),
         "confidence_threshold": 0.85,
     }
@@ -136,20 +136,17 @@ def reason_node(state: TicketState) -> TicketState:
         decision = {
             "decision": "skip",
             "reason": "Could not parse LLM response — defaulting to skip",
-            "confidence_used": state.get("best_confidence", 0),
+            "confidence_used": float(state.get("best_confidence") or 0),
         }
 
-    print(f"[ClosureAgent] Decision: {decision['decision']} — {decision['reason']}")
-    return {**state, "_closure_decision": decision}
+    # Sanitize
+    action     = str(decision.get("decision") or "skip").lower()
+    reason     = str(decision.get("reason") or "")
+    confidence = float(decision.get("confidence_used") or state.get("best_confidence") or 0)
 
+    print(f"[ClosureAgent] Decision: {action} — {reason}")
 
-def act_node(state: TicketState) -> TicketState:
-    """Execute the closure decision."""
-    decision = state.get("_closure_decision", {})
-    action = decision.get("decision", "skip")
-    reason = decision.get("reason", "")
-    confidence = float(decision.get("confidence_used", state.get("best_confidence", 0)))
-
+    # ✅ Act immediately — no state passing
     if action == "close":
         print(f"[ClosureAgent] 🔒 Closing ticket {state['ticket_id']}...")
         result = _close_ticket(
@@ -187,11 +184,9 @@ def act_node(state: TicketState) -> TicketState:
 
 def build_closure_agent():
     graph = StateGraph(TicketState)
-    graph.add_node("reason", reason_node)
-    graph.add_node("act", act_node)
-    graph.set_entry_point("reason")
-    graph.add_edge("reason", "act")
-    graph.add_edge("act", END)
+    graph.add_node("reason_and_act", reason_and_act_node)
+    graph.set_entry_point("reason_and_act")
+    graph.add_edge("reason_and_act", END)
     return graph.compile()
 
 

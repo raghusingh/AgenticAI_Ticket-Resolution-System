@@ -114,8 +114,8 @@ def _run_ingestion(tenant_id: str) -> dict:
 
 # ── Agent nodes ───────────────────────────────────────────────────────────────
 
-def reason_node(state: TicketState) -> TicketState:
-    """LLM decides whether to ingest."""
+def reason_and_act_node(state: TicketState) -> TicketState:
+    """LLM decides whether to ingest, then immediately acts on that decision."""
     print(f"[IngestionAgent] 🧠 Reasoning about KB freshness...")
 
     kb_info = _check_kb_freshness(state["tenant_id"])
@@ -138,15 +138,12 @@ def reason_node(state: TicketState) -> TicketState:
     except Exception:
         decision = {"decision": "skip", "reason": "Could not parse response"}
 
-    print(f"[IngestionAgent] Decision: {decision['decision']} — {decision['reason']}")
-    return {**state, "_ingest_decision": decision["decision"], "_ingest_reason": decision["reason"]}
+    action = str(decision.get("decision") or "skip").lower().strip()
+    reason = str(decision.get("reason") or "")
+    print(f"[IngestionAgent] Decision: {action} — {reason}")
 
-
-def act_node(state: TicketState) -> TicketState:
-    """Execute ingestion if decided."""
-    decision = state.get("_ingest_decision", "skip")
-
-    if decision == "ingest":
+    # ✅ Act immediately — no state passing needed
+    if action == "ingest":
         print(f"[IngestionAgent] ⚡ Running ingestion for {state['tenant_id']}...")
         result = _run_ingestion(state["tenant_id"])
         status = "refreshed" if result.get("status") == "success" else "failed"
@@ -154,7 +151,7 @@ def act_node(state: TicketState) -> TicketState:
     else:
         print(f"[IngestionAgent] ⏭️  KB is fresh — skipping ingestion")
         status = "fresh"
-        message = state.get("_ingest_reason", "KB is fresh")
+        message = reason
 
     steps = state.get("steps_completed", []) + ["ingestion"]
     return {
@@ -169,11 +166,9 @@ def act_node(state: TicketState) -> TicketState:
 
 def build_ingestion_agent():
     graph = StateGraph(TicketState)
-    graph.add_node("reason", reason_node)
-    graph.add_node("act", act_node)
-    graph.set_entry_point("reason")
-    graph.add_edge("reason", "act")
-    graph.add_edge("act", END)
+    graph.add_node("reason_and_act", reason_and_act_node)
+    graph.set_entry_point("reason_and_act")
+    graph.add_edge("reason_and_act", END)
     return graph.compile()
 
 

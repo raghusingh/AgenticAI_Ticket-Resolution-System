@@ -162,6 +162,15 @@ def evaluate_node(state: TicketState) -> TicketState:
             "reasoning": "Fallback to top result",
         }
 
+    # ✅ Sanitize all fields — LLM may return null for any value
+    evaluation = {
+        "best_ticket_id":  str(evaluation.get("best_ticket_id") or ""),
+        "best_resolution": str(evaluation.get("best_resolution") or ""),
+        "confidence":      float(evaluation.get("confidence") or 0.0),
+        "quality":         str(evaluation.get("quality") or "medium"),
+        "reasoning":       str(evaluation.get("reasoning") or ""),
+    }
+
     print(f"[ResolutionAgent] Best match: {evaluation.get('best_ticket_id')} | "
           f"quality={evaluation.get('quality')} | conf={float(evaluation.get('confidence') or 0):.4f}")
     print(f"[ResolutionAgent] Reasoning: {evaluation.get('reasoning')}")

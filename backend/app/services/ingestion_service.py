@@ -224,14 +224,184 @@ class FAISSVectorDB:
         return results
 
 
+
+
+class QdrantVectorDB:
+    """
+    Qdrant vector database — drop-in replacement for FAISSVectorDB.
+    Handles high-volume data with real-time upserts (no full rebuild needed).
+
+    Install: pip install qdrant-client
+    Run Qdrant: docker run -p 6333:6333 qdrant/qdrant
+    """
+
+    def __init__(self, host: str = "localhost", port: int = 6333, api_key: str = None):
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+            self.QdrantClient = QdrantClient
+            self.Distance = Distance
+            self.VectorParams = VectorParams
+            self.PointStruct = PointStruct
+            self.Filter = Filter
+            self.FieldCondition = FieldCondition
+            self.MatchValue = MatchValue
+        except ImportError:
+            raise ImportError(
+                "qdrant-client not installed. Run: pip install qdrant-client"
+            )
+
+        self.client = self.QdrantClient(
+            host=host,
+            port=port,
+            api_key=api_key if api_key else None,
+            https=False,          # ✅ Force HTTP — no SSL
+            prefer_grpc=False,    # ✅ Use REST not gRPC
+            timeout=30,
+        )
+        print(f"[QdrantVectorDB] Connected to Qdrant at {host}:{port}")
+
+    def _ensure_collection(self, collection_name: str, dim: int):
+        """Create collection if it doesn't exist."""
+        existing = [c.name for c in self.client.get_collections().collections]
+        if collection_name not in existing:
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=self.VectorParams(
+                    size=dim,
+                    distance=self.Distance.COSINE,  # Better than L2 for text embeddings
+                ),
+            )
+            print(f"[QdrantVectorDB] ✅ Created collection: {collection_name}")
+        else:
+            print(f"[QdrantVectorDB] Collection exists: {collection_name}")
+
+    def _extract_ticket_id(self, metadata: dict) -> str:
+        """Extract ticket ID from metadata text for deduplication."""
+        text = str(metadata.get("text") or "")
+        match = re.search(r"Issue Key:\s*(.+)", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return str(metadata.get("source_name") or "")
+
+    def _make_point_id(self, ticket_id: str) -> str:
+        """Convert ticket_id to a valid Qdrant point ID (UUID-like hash)."""
+        import hashlib
+        return hashlib.md5(ticket_id.encode()).hexdigest()
+
+    def upsert(self, collection_name: str, vectors: List[Dict]):
+        """
+        Upsert vectors into Qdrant.
+        Uses ticket_id as the point ID — automatic deduplication.
+        Re-ingesting the same ticket updates it in-place (no rebuild needed).
+        """
+        if not vectors:
+            return
+
+        dim = len(vectors[0]["values"])
+        self._ensure_collection(collection_name, dim)
+
+        points = []
+        for v in vectors:
+            ticket_id = self._extract_ticket_id(v["metadata"])
+            point_id  = self._make_point_id(ticket_id) if ticket_id else self._make_point_id(str(len(points)))
+
+            points.append(self.PointStruct(
+                id=point_id,
+                vector=v["values"],
+                payload=v["metadata"],   # Store full metadata as payload
+            ))
+
+        # Qdrant upsert = insert or update by ID — automatic deduplication
+        self.client.upsert(collection_name=collection_name, points=points)
+        print(f"[QdrantVectorDB] ✅ Upserted {len(points)} vector(s) into '{collection_name}'")
+
+    def search(self, collection_name: str, query_vector: List[float], top_k: int = 5) -> List[Dict]:
+        """
+        Search for similar vectors in Qdrant.
+        Returns results in same format as FAISSVectorDB for compatibility.
+        """
+        try:
+            results = self.client.search(
+                collection_name=collection_name,
+                query_vector=query_vector,
+                limit=top_k,
+                with_payload=True,
+            )
+
+            formatted = []
+            for r in results:
+                # Qdrant score is cosine similarity (0-1, higher = more similar)
+                # Convert to L2-like distance for compatibility: lower = better
+                l2_like_score = 1.0 - r.score  # 0 = perfect match, 1 = completely different
+                formatted.append({
+                    "score":    l2_like_score,
+                    "metadata": r.payload or {},
+                })
+
+            return formatted
+
+        except Exception as exc:
+            print(f"[QdrantVectorDB] Search failed for '{collection_name}': {exc}")
+            return []
+
+    def delete(self, collection_name: str, ticket_id: str):
+        """Delete a specific ticket vector by ticket ID."""
+        point_id = self._make_point_id(ticket_id)
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=[point_id],
+        )
+        print(f"[QdrantVectorDB] Deleted vector for ticket: {ticket_id}")
+
+    def count(self, collection_name: str) -> int:
+        """Return total number of vectors in a collection."""
+        try:
+            return self.client.count(collection_name=collection_name).count
+        except Exception:
+            return 0
+
+
 class IngestionService:
     def __init__(self, repo):
         self.repo = repo
         self.embedding_client = EmbeddingClient()
-        self.vector_db = FAISSVectorDB()
+        self.vector_db = self._init_vector_db(repo)
         self.jira_ingestor = JiraIngestor()
         self.sharepoint_ingestor = SharePointIngestor()
         self.sharepoint_local_ingestor = SharePointLocalIngestor()
+
+    def _init_vector_db(self, repo):
+        """
+        Initialize vector DB based on tenant config.
+        Defaults to FAISS if Qdrant is not configured.
+
+        To switch to Qdrant, add to client-a_rag_config.json:
+        {
+          "vector_store": {
+            "provider": "qdrant",
+            "host": "localhost",
+            "port": 6333
+          }
+        }
+        """
+        try:
+            config = repo.get_setup("client-a") or {}
+            vs_config = config.get("vector_store", {})
+            provider = str(vs_config.get("provider") or "faiss").lower()
+
+            if provider == "qdrant":
+                host    = vs_config.get("host", "localhost")
+                port    = int(vs_config.get("port", 6333))
+                api_key = vs_config.get("api_key")
+                print(f"[IngestionService] Using QdrantVectorDB at {host}:{port}")
+                return QdrantVectorDB(host=host, port=port, api_key=api_key)
+            else:
+                print(f"[IngestionService] Using FAISSVectorDB (default)")
+                return FAISSVectorDB()
+        except Exception as exc:
+            print(f"[IngestionService] Vector DB init error: {exc} — falling back to FAISS")
+            return FAISSVectorDB()
 
     def run(self, tenant_id: str) -> Dict[str, Any]:
         config = self.repo.get_setup(tenant_id)
@@ -345,7 +515,11 @@ class IngestionService:
                 continue
 
             searched_collections.add(collection)
+            print(f"[IngestionService] Searching collection: {collection}")
             res = self.vector_db.search(collection, query_vector, top_k=top_k)
+            print(f"[IngestionService] Raw results from {collection}: {len(res)}")
+            for r in res[:3]:
+                print(f"  score={r.get('score'):.4f} | text={str(r.get('metadata',{}).get('text',''))[:60]}")
             results.extend(res)
 
         print("DEBUG vector search time:", time.time() - t1)

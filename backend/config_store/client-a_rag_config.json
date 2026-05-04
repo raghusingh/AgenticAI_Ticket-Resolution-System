@@ -92,5 +92,11 @@
     "llm_api_key": "",
     "embedding_api_key": "",
     "vector_db_api_key": ""
+  },
+  "vector_store": {
+    "provider": "qdrant",
+    "host": "localhost",
+    "port": 6333,
+    "api_key": ""
   }
 }

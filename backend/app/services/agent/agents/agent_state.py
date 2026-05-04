@@ -39,8 +39,15 @@ class TicketState(TypedDict):
     closure_reason:     str
     closure_confidence: float
 
-    # ── Coordinator tracking ──────────────────────────────────────────────────
-    steps_completed:    List[str]   # which agents have run
+    # ── Internal agent working fields (not dropped by LangGraph) ─────────────
+    _ingest_decision:   str    # 'ingest' | 'skip'
+    _ingest_reason:     str
+    _rag_tickets:       List[Dict[str, Any]]  # raw RAG results before filtering
+    _should_notify:     bool
+    _notify_priority:   str
+    _closure_decision:  Dict[str, Any]        # full closure decision dict
+    _next_tool:         str
+    _next_tool_input:   Dict[str, Any]
     errors:             List[str]   # any errors encountered
     final_summary:      str
     done:               bool
@@ -82,4 +89,14 @@ def initial_state(
         errors=[],
         final_summary="",
         done=False,
+
+        # Internal working fields
+        _ingest_decision="",
+        _ingest_reason="",
+        _rag_tickets=[],
+        _should_notify=False,
+        _notify_priority="normal",
+        _closure_decision={},
+        _next_tool="",
+        _next_tool_input={},
     )

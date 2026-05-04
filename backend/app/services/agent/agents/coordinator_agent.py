@@ -168,7 +168,7 @@ def summarize_node(state: TicketState) -> TicketState:
         f"Ticket {state['ticket_id']} processed.",
         f"Ingestion: {state.get('ingestion_status', 'not run')}.",
         f"Resolution: {state.get('resolution_status', 'not run')} "
-        f"(confidence={state.get('best_confidence', 0):.4f}).",
+        f"(confidence={float(state.get('best_confidence') or 0):.4f}).",
         f"Notification: {state.get('notification_status', 'not run')} "
         f"via {state.get('notification_channel', 'none')}.",
         f"Closure: {state.get('closure_decision', 'not run')}.",

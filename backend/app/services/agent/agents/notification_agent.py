@@ -119,8 +119,8 @@ def _send_notification(state: TicketState) -> dict:
 
 # ── Agent nodes ───────────────────────────────────────────────────────────────
 
-def reason_node(state: TicketState) -> TicketState:
-    """LLM decides whether and how to notify."""
+def reason_and_act_node(state: TicketState) -> TicketState:
+    """LLM decides whether to notify, then immediately acts."""
     print(f"[NotificationAgent] 🧠 Reasoning about notification...")
 
     context = {
@@ -128,7 +128,7 @@ def reason_node(state: TicketState) -> TicketState:
         "assignee_email": state.get("assignee_email"),
         "resolution_status": state.get("resolution_status"),
         "matches_found": len(state.get("rag_tickets", [])),
-        "best_confidence": state.get("best_confidence", 0),
+        "best_confidence": float(state.get("best_confidence") or 0),
     }
 
     llm = _get_llm(state["tenant_id"])
@@ -143,16 +143,11 @@ def reason_node(state: TicketState) -> TicketState:
     except Exception:
         decision = {"should_notify": True, "priority": "normal", "reason": "Default"}
 
-    print(f"[NotificationAgent] Decision: notify={decision['should_notify']} "
-          f"priority={decision['priority']}")
-    return {**state, "_should_notify": decision["should_notify"],
-            "_notify_priority": decision["priority"]}
+    should_notify = bool(decision.get("should_notify", True))
+    priority = str(decision.get("priority") or "normal")
+    print(f"[NotificationAgent] Decision: notify={should_notify} priority={priority}")
 
-
-def act_node(state: TicketState) -> TicketState:
-    """Send notification if decided."""
-    should_notify = state.get("_should_notify", True)
-
+    # ✅ Act immediately — no state passing
     if should_notify:
         print(f"[NotificationAgent] 📧 Sending notification for {state['ticket_id']}...")
         result = _send_notification(state)
@@ -179,11 +174,9 @@ def act_node(state: TicketState) -> TicketState:
 
 def build_notification_agent():
     graph = StateGraph(TicketState)
-    graph.add_node("reason", reason_node)
-    graph.add_node("act", act_node)
-    graph.set_entry_point("reason")
-    graph.add_edge("reason", "act")
-    graph.add_edge("act", END)
+    graph.add_node("reason_and_act", reason_and_act_node)
+    graph.set_entry_point("reason_and_act")
+    graph.add_edge("reason_and_act", END)
     return graph.compile()
 
 

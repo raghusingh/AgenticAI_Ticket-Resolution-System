@@ -147,6 +147,8 @@ def _get_raw_config(tenant_id: str) -> Optional[Dict]:
 
     sources = raw.get("data_sources", [])
     print(f"[Scheduler] data_sources count: {len(sources)}")
+    for s in sources:
+        print(f"[Scheduler]   -> source_type={s.get('source_type')!r}  is_enabled={s.get('is_enabled')!r}")
 
     return raw
 
@@ -633,11 +635,11 @@ def run_jira_scheduler_job():
     poller = _jira_poller
 
     interval = int(os.getenv("SCHEDULER_JIRA_INTERVAL_MINUTES", "15"))
+    total_new = 0
 
     for tenant_id in _get_all_tenant_ids():
         raw = _get_raw_config(tenant_id)
         if not raw:
-            print(f"[Scheduler] No config for tenant {tenant_id}")
             continue
 
         sources = raw.get("data_sources", [])
@@ -646,16 +648,17 @@ def run_jira_scheduler_job():
             if (s.get("source_type") or "").lower() == "jira"
             and s.get("is_enabled", True)
         ]
-        print(f"[Scheduler] Tenant {tenant_id} — Total data sources: {len(sources)}")
-        for s in sources:
-            print(f"[Scheduler]   source_type={s.get('source_type')!r} is_enabled={s.get('is_enabled')!r}")
-        print(f"[Scheduler] Tenant {tenant_id} — Jira sources matched: {len(jira_sources)}")
 
         for source in jira_sources:
             new_tickets = poller.poll(tenant_id, source, interval)
+
+            # ✅ Skip silently if no new tickets — no noisy logs
             if not new_tickets:
-                print(f"[Scheduler] No new Jira tickets for tenant {tenant_id} — skipping.")
                 continue
+
+            total_new += len(new_tickets)
+            print(f"\n[Scheduler] 🆕 {len(new_tickets)} new Jira ticket(s) for tenant {tenant_id}")
+
             for t in new_tickets:
                 _process_new_ticket(
                     tenant_id=tenant_id,
@@ -666,8 +669,10 @@ def run_jira_scheduler_job():
                 )
                 time.sleep(1)
 
-    print("[Scheduler] ✅ Jira polling job completed")
-    logger.info("[Scheduler] ✅ Jira polling job completed")
+    # Only log completion if something happened
+    if total_new > 0:
+        print(f"[Scheduler] ✅ Jira polling job completed — processed {total_new} new ticket(s)")
+        logger.info("[Scheduler] ✅ Jira polling job completed — processed %d new ticket(s)", total_new)
 
 
 # Module-level singleton pollers so _file_mod_cache persists across job runs
@@ -751,6 +756,8 @@ def start_scheduler():
             id="jira_poller",
             name="Jira New Ticket Poller",
             replace_existing=True,
+            max_instances=1,      # ✅ only one job runs at a time
+            coalesce=True,        # ✅ skip missed runs, don't pile up
             next_run_time=datetime.now(timezone.utc),
         )
 
@@ -760,6 +767,8 @@ def start_scheduler():
             id="sharepoint_local_poller",
             name="SharePoint Local New Ticket Poller",
             replace_existing=True,
+            max_instances=1,      # ✅ only one job runs at a time
+            coalesce=True,        # ✅ skip missed runs, don't pile up
             next_run_time=datetime.now(timezone.utc),
         )
 

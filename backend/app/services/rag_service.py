@@ -47,8 +47,12 @@ class RAGService:
         raw_docs = retrieval_result.get("results", [])[:top_k]
         all_tickets = self._build_ticket_rows(raw_docs)
 
-        # ✅ LLM re-ranking — filter ALL irrelevant tickets
-        # including open ones that don't match the query
+        # Debug — show what we have before reranking
+        print(f"[RAGService] raw_docs={len(raw_docs)} all_tickets={len(all_tickets)}")
+        for t in all_tickets:
+            print(f"  {t.get('ticket_id')} | status={t.get('status')} | conf={t.get('confidence_score')}")
+
+        # ✅ LLM re-ranking — separate open and closed tickets
         tickets = self._rerank_tickets(question, all_tickets)
 
         summary_prompt = self._build_summary_prompt(question, tickets)
@@ -65,62 +69,131 @@ class RAGService:
 
     def _rerank_tickets(self, question: str, tickets: list) -> list:
         """
-        Use LLM to filter out tickets not relevant to the question.
-        Only keeps tickets where the problem type genuinely matches.
+        Split open and closed tickets, rerank each separately.
+        Open tickets filtered by description match only (no resolution to judge).
+        Closed tickets filtered strictly by problem type match.
         """
+        if not tickets:
+            return []
+
+        # ✅ Split into open and closed tickets
+        # Open tickets have no resolution — reranker would filter them all out
+        # So rerank only closed tickets, then filter open tickets separately
+        open_statuses = {"to do", "open", "in progress", "in review",
+                         "reopened", "pending", "new", "assigned", "on hold"}
+
+        closed_tickets = [t for t in tickets
+                          if str(t.get("status") or "").lower() not in open_statuses]
+        open_tickets   = [t for t in tickets
+                          if str(t.get("status") or "").lower() in open_statuses]
+
+        # Rerank closed tickets by relevance
+        reranked_closed = self._rerank_closed(question, closed_tickets)
+
+        # For open tickets — keep only those whose description matches the query
+        relevant_open = self._filter_open_by_description(question, open_tickets)
+
+        # Closed relevant first, then open relevant
+        result = reranked_closed + relevant_open
+        print(f"[RAGService] Final: {len(reranked_closed)} closed + {len(relevant_open)} open = {len(result)} total")
+        return result
+
+    def _rerank_closed(self, question: str, tickets: list) -> list:
+        """Rerank closed tickets by relevance to the question."""
         if not tickets:
             return []
 
         import json as _json
 
-        ticket_list = []
-        for i, t in enumerate(tickets):
-            ticket_list.append({
+        ticket_list = [
+            {
                 "index": i,
                 "ticket_id": t.get("ticket_id"),
                 "description": (t.get("ticket_description") or "")[:150],
                 "resolution": (t.get("resolution") or "")[:150],
                 "status": t.get("status"),
-            })
+            }
+            for i, t in enumerate(tickets)
+        ]
 
         prompt = (
             f'You are a strict ticket relevance filter.\n\n'
             f'User query: "{question}"\n\n'
-            f'Evaluate each candidate ticket below.\n'
-            f'Keep a ticket ONLY if its description directly relates to the SAME type of problem.\n'
-            f'Apply this rule to BOTH open and closed tickets.\n\n'
+            f'These are CLOSED/RESOLVED tickets. Keep only those whose description '
+            f'directly relates to the SAME type of problem as the user query.\n\n'
             f'Examples of what to REJECT:\n'
-            f'- User asks about "500 error" → reject "CPU high", "API failure", "Payment Gateway"\n'
-            f'- User asks about "login issue" → reject "database timeout", "network outage"\n\n'
+            f'- User asks about "500 error" → reject "CPU high", "API failure", "Payment Gateway"\n\n'
             f'Candidates:\n{_json.dumps(ticket_list, indent=2)}\n\n'
             f'Return JSON only:\n{{"relevant_indices": [list of integer indices]}}'
         )
 
         try:
             raw = self.llm_provider.generate(prompt, context=[])
-            # Clean up response — strip markdown, whitespace
             raw = raw.strip()
             if "```" in raw:
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
             raw = raw.strip()
-
-            # Find JSON object in response
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
                 raw = raw[start:end]
-
             result = _json.loads(raw)
             relevant_indices = result.get("relevant_indices", [])
             filtered = [tickets[i] for i in relevant_indices if isinstance(i, int) and i < len(tickets)]
-            print(f"[RAGService] Re-ranking: {len(tickets)} → {len(filtered)} relevant")
-            print(f"[RAGService] Kept indices: {relevant_indices}")
-            # Only fall back if LLM completely failed (exception), not if it returned empty list
+            print(f"[RAGService] Closed reranking: {len(tickets)} → {len(filtered)} relevant")
             return filtered
         except Exception as exc:
-            print(f"[RAGService] Re-ranking failed: {exc} — returning all")
+            print(f"[RAGService] Closed reranking failed: {exc} — returning all closed")
+            return tickets
+
+    def _filter_open_by_description(self, question: str, tickets: list) -> list:
+        """Filter open tickets — keep those whose description matches the query topic."""
+        if not tickets:
+            return []
+
+        import json as _json
+
+        ticket_list = [
+            {
+                "index": i,
+                "ticket_id": t.get("ticket_id"),
+                "description": (t.get("ticket_description") or "")[:150],
+                "status": t.get("status"),
+            }
+            for i, t in enumerate(tickets)
+        ]
+
+        prompt = (
+            f'You are a ticket relevance filter.\n\n'
+            f'User query: "{question}"\n\n'
+            f'These are OPEN tickets (no resolution yet). Keep those whose description '
+            f'relates to the SAME type of problem as the user query.\n'
+            f'Be inclusive — if the problem type matches, keep it even without resolution.\n\n'
+            f'Candidates:\n{_json.dumps(ticket_list, indent=2)}\n\n'
+            f'Return JSON only:\n{{"relevant_indices": [list of integer indices]}}'
+        )
+
+        try:
+            raw = self.llm_provider.generate(prompt, context=[])
+            raw = raw.strip()
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                raw = raw[start:end]
+            result = _json.loads(raw)
+            relevant_indices = result.get("relevant_indices", [])
+            filtered = [tickets[i] for i in relevant_indices if isinstance(i, int) and i < len(tickets)]
+            print(f"[RAGService] Open filtering: {len(tickets)} → {len(filtered)} relevant")
+            return filtered
+        except Exception as exc:
+            print(f"[RAGService] Open filtering failed: {exc} — returning all open")
             return tickets
 
     def _build_ticket_rows(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

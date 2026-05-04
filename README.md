@@ -1,6 +1,6 @@
 # 🎫 Ticket Resolution System
 
-An intelligent, multi-agent ticket resolution platform powered by RAG (Retrieval Augmented Generation), LangGraph, and LangChain. The system automatically ingests tickets from Jira and SharePoint, finds similar resolved tickets using vector search, notifies assignees via email, and autonomously closes or escalates tickets based on confidence scores.
+An intelligent, multi-agent ticket resolution platform powered by RAG (Retrieval Augmented Generation), LangGraph, and LangChain. The system automatically ingests tickets from Jira and SharePoint, finds similar resolved tickets using vector search, notifies assignees via email, and autonomously closes or escalates tickets based on AI confidence scores.
 
 ---
 
@@ -15,7 +15,10 @@ An intelligent, multi-agent ticket resolution platform powered by RAG (Retrieval
 - [Setup & Installation](#setup--installation)
 - [Configuration](#configuration)
 - [How It Works](#how-it-works)
-- [UI Guide](#ui-guide)
+- [Vector Database](#vector-database)
+- [Database Schema](#database-schema)
+- [Testing](#testing)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -24,103 +27,99 @@ An intelligent, multi-agent ticket resolution platform powered by RAG (Retrieval
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        DATA SOURCES                             │
-│           Jira                      SharePoint Local            │
+│         Jira REST API v3 (tickets + comments)                   │
+│         SharePoint Local (CSV / Excel files)                    │
 └──────────────────────┬──────────────────────────────────────────┘
-                       │ poll / ingest
+                       │ ingest · embed · deduplicate
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   INGESTION PIPELINE                            │
-│  JiraIngestor → fetch tickets + comments → chunk → embed       │
-│  SharePointLocalIngestor → read local files → chunk → embed    │
-│  FAISSVectorDB → deduplicate by ticket_id → upsert vectors     │
-└──────────────────────┬──────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  FAISS VECTOR DATABASE                          │
-│         backend/faiss_store/client-a_KB_All.index              │
-└──────────────┬────────────────────────────────────────────────-─┘
+│               QDRANT VECTOR DATABASE  (primary)                 │
+│         Collection: client-a_KB_All                             │
+│         Cosine similarity · Real-time upserts · No rebuild      │
+│         Switchable to FAISS via config                          │
+└──────────────┬────────────────────────────────────────----------┘
                │
-      ┌────────┴─────────┐
-      ▼                  ▼
-┌───────────┐     ┌──────────────────────────────────────────────┐
-│ React UI  │     │              APScheduler                     │
-│ (search)  │     │  polls Jira every N minutes                  │
-│           │     │  detects new tickets automatically           │
-└─────┬─────┘     └────────────────────┬─────────────────────────┘
-      │                                │ new ticket detected
-      │ POST /api/v1/chat              ▼
-      │ (direct RAG, no agent)  ┌──────────────────────────────┐
-      │                         │   COORDINATOR AGENT (LLM)    │
-      ▼                         │   plans execution order       │
-┌───────────┐                   └──────┬───────────────────────-┘
-│ RAGService│                          │
-│ (fast     │         ┌────────────────┼──────────────────────┐
-│ semantic  │         ▼                ▼                      ▼
-│ search)   │  ┌─────────────┐ ┌─────────────┐ ┌────────────────┐
-└───────────┘  │ INGESTION   │ │ RESOLUTION  │ │ NOTIFICATION   │
-               │ AGENT (LLM) │ │ AGENT (LLM) │ │ AGENT (LLM)    │
-               │             │ │             │ │                │
-               │ Decides if  │ │ Searches    │ │ Decides who    │
-               │ KB needs    │ │ FAISS, ranks│ │ to notify and  │
-               │ refresh     │ │ best match  │ │ sends email    │
-               └─────────────┘ └─────────────┘ └────────────────┘
-                                                        │
-                                               ┌────────▼───────┐
-                                               │ CLOSURE AGENT  │
-                                               │ (LLM)          │
-                                               │                │
-                                               │ conf >= 0.85   │
-                                               │ → close ticket │
-                                               │ conf < 0.85    │
-                                               │ → escalate     │
-                                               └────────────────┘
+       ┌───────┴────────┐
+       ▼                ▼
+┌────────────────┐  ┌────────────────────────────────────────────┐
+│   React UI     │  │              APScheduler                   │
+│ /api/v1/chat   │  │  polls Jira every 10 min                   │
+│ RAGService     │  │  max_instances=1 · coalesce=True           │
+│ Split reranker │  │  completely silent when no new tickets      │
+└────────────────┘  └──────────────┬─────────────────────────────┘
+                                   │ new ticket detected
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   COORDINATOR AGENT (LLM #1) │
+                    │   plans execution order       │
+                    └──────┬───────────────────────┘
+                           │
+           ┌───────────────┼──────────────────┐
+           ▼               ▼                  ▼
+  ┌──────────────┐ ┌──────────────┐  ┌──────────────────┐
+  │  INGESTION   │ │  RESOLUTION  │  │  NOTIFICATION    │
+  │  AGENT #2    │ │  AGENT #3    │  │  AGENT #4        │
+  │              │ │              │  │                  │
+  │ reason+act   │ │ reason+act   │  │ reason+act       │
+  │ merged node  │ │ merged node  │  │ merged node      │
+  └──────────────┘ └──────────────┘  └──────────────────┘
+                                              │
+                                    ┌─────────▼──────────┐
+                                    │  CLOSURE AGENT #5  │
+                                    │  reason+act merged │
+                                    │  ≥0.85 → close     │
+                                    │  0.6-0.85 → escal. │
+                                    └────────────────────┘
 ```
 
 ---
 
 ## 🤖 Multi-Agent System
 
-The system uses **5 specialized LangGraph agents**, each with its own LLM reasoning loop:
+5 specialized LangGraph agents, each with its own LLM reasoning loop.
+
+### Critical Architecture Fix — Merged Nodes
+All agents previously used separate `reason_node` → `act_node`. LangGraph was **silently dropping internal state keys** (e.g. `_ingest_decision`) between nodes because they weren't declared in `TicketState`. This caused:
+- Ingestion agent deciding "ingest" but always skipping
+- Notification agent always notifying regardless of LLM decision
+- Closure agent ignoring LLM decision
+
+**Fix:** All agents now use a single `reason_and_act_node` — decide and act in one function, no state passing needed.
 
 ### 1. Coordinator Agent
-- **Role:** Orchestrates all other agents
-- **Decides:** Execution plan and order
-- **Runs:** First and last — plans then summarizes
-- **File:** `app/services/agent/agents/coordinator_agent.py`
+- Plans execution: Ingestion → Resolution → Notification → Closure
+- Handles agent failures gracefully — others still run
+- None-safe formatting for all confidence values
 
 ### 2. Ingestion Agent
-- **Role:** Keeps the knowledge base fresh
-- **Decides:** Whether to re-ingest based on KB age
-- **Rule:** Re-ingest if KB is older than 1 hour or doesn't exist
-- **File:** `app/services/agent/agents/ingestion_agent.py`
+- Checks Qdrant KB freshness (1-hour threshold)
+- Re-ingests from Jira (with comments) + SharePoint when stale
+- Merged node — no state-passing bug
 
 ### 3. Resolution Agent
-- **Role:** Finds the best matching resolved ticket
-- **Decides:** Which candidate is the best match and why
-- **Returns:** Best ticket ID, resolution text, confidence score
-- **File:** `app/services/agent/agents/resolution_agent.py`
+- Searches Qdrant for similar tickets
+- LLM ranks candidates; full JSON sanitization for null values
+- Only passes **closed tickets with resolution** to Notification Agent
 
 ### 4. Notification Agent
-- **Role:** Sends resolution suggestions to the assignee
-- **Decides:** Whether to notify and at what priority
-- **Sends:** HTML email with resolution table (via SMTP)
-- **File:** `app/services/agent/agents/notification_agent.py`
+- Decides priority (high/normal) based on confidence
+- Sends HTML email to assignee + CC recipients
+- Skips sending if no resolved tickets (prevents blank emails)
 
 ### 5. Closure Agent
-- **Role:** Closes or escalates the ticket
-- **Decides:** Based on confidence threshold (0.85)
-- **Actions:** Close in Jira → Done, or escalate for human review
-- **File:** `app/services/agent/agents/closure_agent.py`
+- confidence ≥ 0.85 → close in Jira (transition to Done + comment)
+- confidence 0.60–0.85 → escalate for human review
+- confidence < 0.60 → skip
+- All confidence values None-safe
 
 ### Agent vs UI Search
 
-| Action | Path | Agents Used |
+| Action | Path | Agents |
 |---|---|---|
-| Search on chat UI | `POST /api/v1/chat` → RAGService | ❌ None (direct FAISS) |
-| New ticket (scheduler) | APScheduler → Coordinator | ✅ All 5 agents |
-| Manual agent trigger | `POST /api/v1/agent/process-ticket` | ✅ All 5 agents |
-| Close ticket on UI | `POST /api/v1/tickets/close` | ❌ None (direct service) |
+| Chat UI search | `POST /api/v1/chat` → RAGService | ❌ None |
+| New ticket (scheduler) | APScheduler → Coordinator | ✅ All 5 |
+| Manual trigger | `POST /api/v1/agent/process-ticket` | ✅ All 5 |
+| Close ticket on UI | `POST /api/v1/tickets/close` | ❌ None |
 
 ---
 
@@ -129,30 +128,27 @@ The system uses **5 specialized LangGraph agents**, each with its own LLM reason
 ### Backend
 | Component | Technology |
 |---|---|
-| API Framework | FastAPI |
+| API Framework | FastAPI + Python 3.11 |
 | Agent Orchestration | LangGraph |
-| Agent Tools | LangChain |
 | LLM | OpenAI GPT-4o-mini / Google Gemini |
-| Embeddings | OpenAI text-embedding-3-small / Google |
-| Vector Database | FAISS (custom FAISSVectorDB) |
-| Relational Database | SQLite |
+| Embeddings | OpenAI text-embedding-3-small |
+| Vector Database | **Qdrant** (primary) / FAISS (fallback) |
+| Database | SQLite |
 | Scheduler | APScheduler |
 | Email | SMTP (Gmail) |
-| Auth | Session-based (SQLite) |
 
 ### Frontend
 | Component | Technology |
 |---|---|
-| Framework | React (Vite) |
+| Framework | React + Vite |
 | HTTP Client | Axios |
-| Styling | CSS + inline styles |
 
 ### Integrations
 | Source | Method |
 |---|---|
-| Jira | REST API v3 (`/rest/api/3/search/jql`) |
+| Jira | REST API v3 + comment fetching per ticket |
 | SharePoint Local | File system reader |
-| Email | Gmail SMTP with App Password |
+| Email | Gmail SMTP with App Password + CC |
 
 ---
 
@@ -162,157 +158,106 @@ The system uses **5 specialized LangGraph agents**, each with its own LLM reason
 ticket-resolution-system/
 ├── backend/
 │   ├── app/
-│   │   ├── api/
-│   │   │   ├── auth.py                          # Login/session auth
-│   │   │   └── routes/
-│   │   │       ├── agent_router.py              # POST /api/v1/agent/process-ticket
-│   │   │       ├── chat.py                      # POST /api/v1/chat (RAG search)
-│   │   │       ├── close_ticket.py              # POST /api/v1/tickets/close
-│   │   │       ├── config.py                    # Tenant config management
-│   │   │       ├── health.py                    # GET /api/v1/health
-│   │   │       ├── notification.py              # Notification endpoints
-│   │   │       ├── rag_admin.py                 # Ingestion + config endpoints
-│   │   │       ├── scheduler.py                 # Scheduler control
-│   │   │       ├── ticket_lifecycle.py          # Lifecycle events
-│   │   │       ├── theme.py                     # UI theme settings
-│   │   │       └── webhooks.py                  # Webhook receiver
+│   │   ├── api/routes/
+│   │   │   ├── agent_router.py              # POST /api/v1/agent/process-ticket
+│   │   │   ├── chat.py                      # POST /api/v1/chat
+│   │   │   ├── close_ticket.py              # POST /api/v1/tickets/close
+│   │   │   └── rag_admin.py                 # Ingestion endpoints
 │   │   ├── core/
-│   │   │   ├── db_path.py                       # Single source of truth for DB path
-│   │   │   └── settings.py                      # App settings
-│   │   ├── factories/
-│   │   │   └── provider_factory.py              # LLM/Embedding/VectorStore factory
-│   │   ├── providers/
-│   │   │   ├── embeddings/                      # OpenAI + Gemini embedding providers
-│   │   │   ├── llm/                             # OpenAI + Gemini LLM providers
-│   │   │   └── vectorstores/                    # FAISS + Chroma providers
+│   │   │   └── db_path.py                   # ✅ Single DB path source of truth
 │   │   ├── repositories/
-│   │   │   ├── ai_config_repository.py          # Tenant AI config reader
-│   │   │   ├── rag_admin_repository.py          # RAG admin operations
-│   │   │   └── ticket_lifecycle_repository.py   # Events + notifications DB
+│   │   │   └── ticket_lifecycle_repository.py  # get_closed_tickets() for dropdown
 │   │   ├── schemas/
-│   │   │   ├── chat.py                          # Chat request/response schemas
-│   │   │   ├── notification.py                  # NotifyRequest, ResolutionRow
-│   │   │   ├── rag_admin.py                     # RAG admin schemas
-│   │   │   └── ticket_lifecycle.py              # AutoCloseRequest/Result
+│   │   │   └── chat.py                      # ✅ confidence_score: Optional[float]
 │   │   └── services/
-│   │       ├── agent/
-│   │       │   ├── agent_tools.py               # Legacy single-agent tools
-│   │       │   ├── ticket_agent.py              # Legacy single-agent (fallback)
-│   │       │   └── agents/                      # ✅ Multi-agent system
-│   │       │       ├── agent_state.py           # Shared state TypedDict
-│   │       │       ├── coordinator_agent.py     # Orchestrator agent
-│   │       │       ├── ingestion_agent.py       # KB freshness agent
-│   │       │       ├── resolution_agent.py      # RAG search + ranking agent
-│   │       │       ├── notification_agent.py    # Email notification agent
-│   │       │       └── closure_agent.py         # Close/escalate agent
-│   │       ├── ingestors/
-│   │       │   ├── jira_ingestor.py             # Jira REST API fetcher + comments
-│   │       │   ├── sharepoint_ingestor.py       # SharePoint online fetcher
-│   │       │   └── sharepoint_local_ingestor.py # Local file reader
-│   │       ├── notification/
-│   │       │   ├── dispatcher.py                # HTML email builder + SMTP sender
-│   │       │   └── notification_service.py      # Notification orchestration
+│   │       ├── agent/agents/
+│   │       │   ├── agent_state.py           # ✅ All internal fields in TypedDict
+│   │       │   ├── coordinator_agent.py     # ✅ None-safe formatting
+│   │       │   ├── ingestion_agent.py       # ✅ Merged reason+act node
+│   │       │   ├── resolution_agent.py      # ✅ Merged + JSON sanitization
+│   │       │   ├── notification_agent.py    # ✅ Merged reason+act node
+│   │       │   └── closure_agent.py         # ✅ Merged reason+act node
 │   │       ├── scheduler/
-│   │       │   └── ticket_scheduler.py          # APScheduler + multi-agent trigger
-│   │       ├── ticket_lifecycle/
-│   │       │   ├── auto_closure_service.py      # Legacy auto-closure
-│   │       │   └── close_ticket_service.py      # Jira ticket closer
-│   │       ├── ingestion_service.py             # FAISS ingest + query engine
-│   │       └── rag_service.py                   # RAG orchestration for UI search
+│   │       │   └── ticket_scheduler.py      # ✅ max_instances=1, silent idle
+│   │       ├── ingestion_service.py         # ✅ QdrantVectorDB + FAISSVectorDB
+│   │       └── rag_service.py               # ✅ Split reranking open vs closed
 │   ├── config_store/
-│   │   └── client-a_rag_config.json             # Tenant config (LLM + sources)
+│   │   └── client-a_rag_config.json         # ✅ vector_store section added
 │   ├── database/
-│   │   ├── migrate.py                           # Creates DB tables
-│   │   ├── clear_scheduler.py                   # Utility to clear processed tickets
-│   │   └── ticket.db                            # SQLite database (auto-created)
-│   ├── faiss_store/                             # FAISS index files (auto-created)
-│   ├── .env                                     # Environment variables
-│   └── requirements.txt
-└── frontend/
-    └── src/
-        ├── api/
-        │   ├── chatApi.js                       # API calls (search, close, ingest)
-        │   ├── client.js                        # Axios base client
-        │   └── ragAdminApi.js                   # RAG admin API calls
-        ├── pages/
-        │   ├── ChatPage.jsx                     # Main chat + search UI
-        │   ├── LoginPage.jsx                    # Login page
-        │   └── RagSetupPage.jsx                 # RAG configuration UI
-        └── components/
-            ├── DataSourceForm.jsx               # Jira/SharePoint config form
-            ├── ModelConfigForm.jsx              # LLM/Embedding config form
-            └── SecretConfigForm.jsx             # API keys config form
+│   │   ├── migrate.py                       # Creates all DB tables
+│   │   ├── clear_scheduler.py               # Clear processed ticket cache
+│   │   └── ticket.db                        # SQLite (auto-created)
+│   ├── .env
+│   └── requirements.txt                     # ✅ qdrant-client added
+└── frontend/src/
+    ├── api/
+    │   └── chatApi.js                       # ✅ triggerIngestion added
+    └── pages/
+        └── ChatPage.jsx                     # ✅ Close dialog, auto-refresh
 ```
 
 ---
 
 ## ✨ Features
 
-### Core Features
-- **Semantic Search** — Find similar tickets using vector embeddings, not just keyword matching
-- **Multi-Source Ingestion** — Ingest from Jira, SharePoint Online, and local SharePoint files
-- **Comment Ingestion** — Jira comments (including closure reasons) are fetched and stored
-- **Deduplication** — Re-ingesting a ticket updates it instead of creating duplicates
-- **Multi-LLM Support** — Switch between OpenAI and Google Gemini via config
+### RAG Pipeline
+- **Two-stage retrieval** — Qdrant vector search → LLM reranking
+- **Split reranking** — open and closed tickets handled separately:
+  - Closed tickets: strict filter (same problem type, has resolution)
+  - Open tickets: lenient filter (topic match by description only)
+- **Score threshold** — configurable `score_threshold` in models config (default 1.5)
+- **Comment ingestion** — Jira comments fetched and stored per ticket
+
+### Vector Database — Qdrant
+- Real-time upserts — no full index rebuild when a ticket closes
+- Automatic deduplication by point ID (MD5 hash of ticket_id)
+- Cosine similarity (better for text than L2/FAISS)
+- Web dashboard at `http://localhost:6333/dashboard`
+- Switchable back to FAISS via config with no code changes
 
 ### Multi-Agent Automation
-- **5 Specialized Agents** — Each with its own LLM reasoning loop
-- **Auto-closure** — Tickets with confidence ≥ 0.85 are automatically closed in Jira
-- **Auto-escalation** — Low confidence tickets (0.60–0.85) are flagged for human review
-- **Smart Notification** — Agent decides priority and sends styled HTML email
+- **5 agents** each with own LLM reasoning loop
+- **Merged nodes** — avoid LangGraph state-passing bug
+- **Auto-closure** at 85% confidence threshold
+- **Graceful failures** — one agent fails, others continue
+- **None-safe** — all confidence/format values sanitized
+
+### Scheduler
+- **Silent when idle** — zero console noise when no new tickets
+- **No overlap** — `max_instances=1` prevents parallel job runs
+- **Coalesce** — missed runs skipped, not piled up
+- **10-minute interval** — enough time for 5 LLM calls
 
 ### Email Notifications
-- **HTML Resolution Table** — Styled table with Source, Ticket ID, Description, Resolution, Confidence
-- **New Ticket Summary** — Top box showing new ticket ID, source, and description
-- **CC Support** — Send to assignee + additional recipients via `SMTP_CC`
-- **Source Type** — Each row shows correct source (Jira / Local SharePoint)
+- HTML resolution table with Source, Ticket ID, Description, Resolution, Confidence
+- CC recipients via `SMTP_CC` in `.env`
+- Skipped if no resolved tickets (no blank emails)
+- Uses `prefetched_tickets` — no duplicate RAG call
 
 ### UI Features
-- **Chat Interface** — Search tickets using natural language
-- **Results Table** — Shows matched tickets with status, resolution, confidence
-- **Open Tickets** — Shown with blank resolution and confidence (not yet resolved)
-- **Close Ticket** — Close open tickets from UI using resolution from closed ticket dropdown
-- **Auto Refresh** — Table refreshes automatically after closing a ticket
-- **Dark/Light Theme** — Toggle between themes
-- **RAG Setup** — Configure LLM, embeddings, and data sources from UI
+- Search returns open + closed tickets (split reranked)
+- Open tickets shown with blank resolution + `-` confidence
+- Close button only on open rows
+- Close dialog: selected ticket shown as label (read-only), resolution dropdown auto-fills
+- After close: re-ingest → 1.5s wait → re-search → table refreshes automatically
 
 ---
 
 ## 🔌 API Endpoints
 
-### Chat & Search
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/v1/chat` | Search tickets using RAG (no agent) |
-
-### Agent
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/agent/process-ticket` | Manually trigger multi-agent system |
-| `GET` | `/api/v1/agent/status` | Check if LangGraph is available |
-
-### Tickets
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/tickets/close` | Close a ticket in Jira + DB |
-| `GET` | `/api/v1/tickets/closed/{tenant_id}` | Get all closed tickets for dropdown |
-
-### RAG Admin
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/admin/rag-config/ingest/{tenant_id}` | Run ingestion pipeline |
-| `GET` | `/api/v1/admin/rag-config/{tenant_id}` | Get tenant RAG config |
-| `POST` | `/api/v1/admin/rag-config/{tenant_id}` | Save tenant RAG config |
-
-### Auth
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/login` | Login and get session |
-
-### Health
-| Method | Endpoint | Description |
-|---|---|---|
+| `POST` | `/api/v1/chat` | RAG search — direct Qdrant, no agent |
+| `POST` | `/api/v1/agent/process-ticket` | Trigger all 5 agents manually |
+| `GET` | `/api/v1/agent/status` | LangGraph availability |
+| `POST` | `/api/v1/tickets/close` | Close ticket in Jira + DB |
+| `GET` | `/api/v1/tickets/closed/{tenant_id}` | Closed tickets for dropdown |
+| `POST` | `/api/v1/admin/rag-config/ingest/{tenant_id}` | Run ingestion |
+| `GET` | `/api/v1/admin/rag-config/{tenant_id}` | Get tenant config |
+| `POST` | `/api/v1/login` | Session auth |
 | `GET` | `/api/v1/health` | Health check |
+
+Swagger UI: `http://localhost:8000/docs`
 
 ---
 
@@ -321,96 +266,41 @@ ticket-resolution-system/
 ### Prerequisites
 - Python 3.11
 - Node.js 18+
-- Git
+- Docker (for Qdrant)
 
-### 1. Clone and setup backend
+### 1. Start Qdrant
+```bash
+docker run -d -p 6333:6333 -p 6334:6334 \
+  -v qdrant_data:/qdrant/storage \
+  qdrant/qdrant
+```
+Verify: `http://localhost:6333/dashboard`
 
+### 2. Setup backend
 ```bash
 cd backend
-
-# Create virtual environment with Python 3.11
 py -3.11 -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Mac/Linux
-
-# Install dependencies
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # Mac/Linux
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
-
-```bash
-# Copy example env file
-cp .env.example .env
-```
-
-Edit `.env` with your credentials (see [Configuration](#configuration)).
-
-### 3. Run database migrations
-
-```bash
-python database/migrate.py
-```
-
-### 4. Start the backend
-
-```bash
-python -m uvicorn app.main:app --reload
-```
-
-Backend runs at `http://localhost:8000`
-Swagger UI at `http://localhost:8000/docs`
-
-### 5. Setup frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend runs at `http://localhost:5173`
-
-### 6. Run ingestion
-
-After starting the server, populate the knowledge base:
-
-```
-POST http://localhost:8000/api/v1/admin/rag-config/ingest/client-a
-```
-
-Or use the RAG Setup page in the UI.
-
----
-
-## ⚙️ Configuration
-
-### `.env` file
-
+### 3. Configure `.env`
 ```env
-# App
-APP_NAME=Ticket Resolution System
-APP_ENV=dev
-
-# Auto-closure threshold (0.0 - 1.0)
 AUTO_CLOSE_CONFIDENCE_THRESHOLD=0.85
 
-# SMTP Email
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=your@gmail.com
-SMTP_PASSWORD=your_16_char_app_password   # Gmail App Password
-SMTP_FROM=your@gmail.com
-SMTP_CC=manager@example.com,team@example.com   # optional
+SMTP_PASSWORD=your_16_char_app_password
+SMTP_CC=
 
-# Scheduler
 SCHEDULER_ENABLED=true
-SCHEDULER_JIRA_INTERVAL_MINUTES=5
-SCHEDULER_SHAREPOINT_INTERVAL_MINUTES=5
+SCHEDULER_JIRA_INTERVAL_MINUTES=10
+SCHEDULER_SHAREPOINT_INTERVAL_MINUTES=10
 ```
 
-### `config_store/client-a_rag_config.json`
-
+### 4. Configure tenant (`config_store/client-a_rag_config.json`)
 ```json
 {
   "tenant_id": "client-a",
@@ -419,26 +309,22 @@ SCHEDULER_SHAREPOINT_INTERVAL_MINUTES=5
     "llm_model_name": "gpt-4o-mini",
     "embedding_provider": "OpenAI",
     "embedding_model_name": "text-embedding-3-small",
-    "temperature": 0.1,
-    "top_k": 5,
-    "max_tokens": 1000,
-    "min_confidence": 0.5
+    "score_threshold": 1.5
+  },
+  "vector_store": {
+    "provider": "qdrant",
+    "host": "localhost",
+    "port": 6333,
+    "api_key": ""
   },
   "data_sources": [
     {
-      "source_name": "Jira",
       "source_type": "jira",
       "source_url": "https://your-domain.atlassian.net/",
       "username": "your@email.com",
       "token": "your_jira_api_token",
       "project_key": "SCRUM",
       "is_enabled": true
-    },
-    {
-      "source_name": "Local SharePoint",
-      "source_type": "sharepoint_local",
-      "source_url": "C:\\path\\to\\your\\tickets\\folder",
-      "is_enabled": false
     }
   ],
   "secrets": {
@@ -448,117 +334,100 @@ SCHEDULER_SHAREPOINT_INTERVAL_MINUTES=5
 }
 ```
 
+### 5. Run migrations and start server
+```bash
+python database/migrate.py
+python -m uvicorn app.main:app --reload
+```
+
+### 6. Run ingestion
+```
+POST http://localhost:8000/api/v1/admin/rag-config/ingest/client-a
+```
+
+### 7. Start frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 ---
 
 ## 🔄 How It Works
 
-### UI Search Flow (No Agent)
+### UI Search (No Agent)
 ```
-User types query
+User types query → POST /api/v1/chat
       ↓
-POST /api/v1/chat
+RAGService.ask()
       ↓
-RAGService.ask() → embeds query → FAISS search → top-k results
+ingestion_service.query() → Qdrant search → score threshold filter
       ↓
-Results displayed in table:
-  - Closed tickets → show resolution + confidence
-  - Open tickets   → show blank resolution + blank confidence
+_build_ticket_rows() → open = blank resolution/confidence
+      ↓
+_rerank_tickets() splits into:
+  ├── _rerank_closed()              → strict LLM filter
+  └── _filter_open_by_description() → lenient LLM filter
+      ↓
+Results table — relevant open + closed tickets
 ```
 
-### New Ticket Auto-Processing Flow (Multi-Agent)
+### New Ticket Auto-Processing
 ```
-APScheduler polls Jira every 5 minutes
+APScheduler polls every 10 min
+  → silent if no new tickets
       ↓
-New ticket detected (not in scheduler_processed table)
+New ticket detected
       ↓
-Coordinator Agent plans execution
+Coordinator Agent → plans execution
       ↓
 Ingestion Agent   → check KB age → re-ingest if stale
       ↓
-Resolution Agent  → FAISS search → LLM ranks candidates → best match
+Resolution Agent  → Qdrant search → LLM ranks → best match
       ↓
-Notification Agent → LLM decides priority → send HTML email
+Notification Agent → email if resolved tickets exist
       ↓
-Closure Agent     → LLM evaluates confidence:
-                    ≥ 0.85 → close ticket in Jira (transition to Done)
-                    0.60-0.85 → escalate (record in DB)
-                    < 0.60 → skip
+Closure Agent     → close / escalate / skip by confidence
       ↓
-Coordinator summarizes → ticket marked as processed
-```
-
-### Manual Agent Trigger
-```
-POST /api/v1/agent/process-ticket
-{
-  "tenant_id": "client-a",
-  "ticket_id": "SCRUM-25",
-  "source_type": "jira",
-  "description": "500 Internal Error on website",
-  "assignee_email": "user@example.com"
-}
-      ↓
-Same multi-agent flow as above
-      ↓
-Returns: decision, confidence, steps_completed, summary
-```
-
-### Manual Ticket Close from UI
-```
-User clicks 🔒 Close on an open ticket row
-      ↓
-Selects resolution from closed ticket dropdown
-      ↓
-POST /api/v1/tickets/close
-      ↓
-CloseTicketService:
-  1. Transition Jira ticket to Done
-  2. Add comment with resolution
-  3. Record in ticket_events DB
-      ↓
-Trigger re-ingestion (POST /api/v1/admin/rag-config/ingest)
-      ↓
-Re-run last search → table refreshes automatically
+Ticket marked processed in scheduler_processed
 ```
 
 ---
 
-## 🖥️ UI Guide
+## 🗄️ Vector Database
 
-### Chat Page
-- **Search box** — Type any problem description to find similar resolved tickets
-- **Results table** — Shows top matching tickets with confidence scores
-- **Close button** — Appears on open tickets only (not on Done/Closed rows)
-- **Close dialog** — Select resolution from closed ticket dropdown, ticket ID pre-filled
+### Switching between Qdrant and FAISS
+Change `provider` in `client-a_rag_config.json` and re-run ingestion:
 
-### RAG Setup Page (⚙ button)
-- **Model Config** — Set LLM provider, model, temperature
-- **Data Sources** — Configure Jira URL, credentials, project key
-- **Ingestion** — Trigger manual re-ingestion of knowledge base
-- **Test Connection** — Verify Jira/SharePoint connectivity
+```json
+"vector_store": { "provider": "qdrant" }   // Qdrant (recommended)
+"vector_store": { "provider": "faiss" }    // FAISS fallback
+```
+
+| Feature | FAISS | Qdrant |
+|---|---|---|
+| Scale | Millions | Billions |
+| Upsert | Full rebuild | Real-time |
+| Deduplication | Manual | Automatic |
+| Distance | L2 | Cosine |
+| Deployment | File-based | Docker |
 
 ---
 
-## 🗄️ Database Tables
+## 🗄️ Database Schema
 
-```sql
--- Tracks scheduler processed tickets (prevents duplicate processing)
-scheduler_processed (id, tenant_id, source_type, ticket_id, content_hash, processed_at)
+Path: `backend/database/ticket.db` — enforced by `app/core/db_path.py`
 
--- Records all ticket lifecycle events (auto-close, escalate, notified)
-ticket_events (id, tenant_id, ticket_id, source_type, event_type,
-               confidence, matched_ticket_id, resolution, reason, created_at)
+| Table | Purpose | Key columns |
+|---|---|---|
+| `ticket_events` | All lifecycle events | ticket_id, event_type, confidence, resolution |
+| `notification_log` | Outgoing emails | ticket_id, assignee_email, channel, status |
+| `scheduler_processed` | Prevents duplicate runs | tenant_id, ticket_id, content_hash |
+| `users` | Auth | username, password_hash |
+| `sessions` | Sessions | session_id, username, expires_at |
 
--- Logs all outgoing notifications
-notification_log (id, tenant_id, ticket_id, assignee_email, channel,
-                  status, payload, error_message, created_at)
-
--- User sessions
-sessions (session_id, username, created_at, expires_at)
-
--- Users
-users (id, username, password_hash, created_at)
-```
+Event types: `auto_closed` · `escalated` · `notified` · `skipped`
 
 ---
 
@@ -571,30 +440,51 @@ python -c "
 import sys; sys.path.insert(0, '.')
 from dotenv import load_dotenv; load_dotenv()
 from app.services.agent.agents.coordinator_agent import run_multi_agent_system
-
 result = run_multi_agent_system(
     tenant_id='client-a',
     ticket_id='SCRUM-TEST',
     source_type='jira',
-    description='500 Internal Error on website after deployment',
+    description='500 Internal Server Error on website',
     assignee_email='your@email.com',
 )
 print(result)
 "
 ```
 
-### Clear scheduler cache (reprocess tickets)
+### Verify Qdrant collection
 ```bash
-python database/clear_scheduler.py --all
-python database/clear_scheduler.py --ticket SCRUM-9
+python -c "
+from qdrant_client import QdrantClient
+c = QdrantClient(host='localhost', port=6333, https=False)
+for col in c.get_collections().collections:
+    print(col.name, '->', c.count(col.name).count, 'vectors')
+"
 ```
 
-### Check DB contents
+### Clear scheduler cache
+```bash
+python database/clear_scheduler.py --all
+python database/clear_scheduler.py --ticket SCRUM-30
+```
+
+### Check DB events
 ```bash
 python -c "
 import sqlite3
 from app.core.db_path import get_db_path
 conn = sqlite3.connect(get_db_path())
-print([r for r in conn.execute('SELECT ticket_id, event_type, confidence FROM ticket_events ORDER BY created_at DESC LIMIT 10')])
+for r in conn.execute('SELECT ticket_id, event_type, confidence, created_at FROM ticket_events ORDER BY created_at DESC LIMIT 10'):
+    print(r)
 "
 ```
+
+---
+
+## 🗺️ Roadmap
+
+| Phase | Status | Description |
+|---|---|---|
+| Phase 1 — POC | ✅ Complete | RAG + 5-agent LangGraph + Qdrant + React UI |
+| Phase 2 — Harden | 🔜 Next | PostgreSQL, Redis cache, multi-tenant isolation |
+| Phase 3 — Scale | ⬜ Planned | Celery queue, Jira webhooks, LangSmith tracing |
+| Phase 4 — Production | ⬜ Planned | Kubernetes, Grafana, MCP server, enterprise SSO |
