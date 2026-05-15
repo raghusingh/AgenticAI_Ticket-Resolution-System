@@ -340,8 +340,9 @@ Tickets:
 """.strip()
 
     def _extract_field(self, text: str, field_name: str) -> str:
-        pattern = rf"{re.escape(field_name)}:\s*(.+)"
-        match = re.search(pattern, text, re.IGNORECASE)
+        # ✅ Capture multi-line values — stops at next field (Capital Word:) or end
+        pattern = rf"(?m){re.escape(field_name)}:\s*(.*?)(?=\n[A-Z][A-Za-z ]+:|\Z)"
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
         return match.group(1).strip() if match else ""
 
     def _normalize_score(self, score: Any) -> float:

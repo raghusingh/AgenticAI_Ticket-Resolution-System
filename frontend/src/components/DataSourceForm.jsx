@@ -237,58 +237,74 @@ export default function DataSourceForm({
         {/* 🔥 Jira */}
         {form.source_type === "jira" && (
           <>
-            <input name="username" value={form.username} onChange={handleChange} placeholder="Username" />
-            <input name="token" value={form.token} onChange={handleChange} placeholder="Token" />
-            <input name="project_key" value={form.project_key} onChange={handleChange} placeholder="Project Key" />
-            <input name="jql" value={form.jql} onChange={handleChange} placeholder="JQL" />
+           <label>
+         User name
+            <input name="username" value={form.username} onChange={handleChange} placeholder="Username" /></label>
+           <label>
+         Token <input name="token" value={form.token} onChange={handleChange} placeholder="Token" /></label>
+             <label>
+         Project Key <input name="project_key" value={form.project_key} onChange={handleChange} placeholder="Project Key" /></label>
+            <label>
+         JQL  <input name="jql" value={form.jql} onChange={handleChange} placeholder="JQL" /></label>
           </>
         )}
 
         {/* 🔥 SharePoint API */}
         {form.source_type === "sharepoint" && (
           <>
-            <input name="site_id" value={form.site_id} onChange={handleChange} placeholder="Site ID" />
-            <input name="drive_id" value={form.drive_id} onChange={handleChange} placeholder="Drive ID" />
-            <input name="folder_path" value={form.folder_path} onChange={handleChange} placeholder="Folder Path" />
+            <label>
+         Site ID <input name="site_id" value={form.site_id} onChange={handleChange} placeholder="Site ID" /></label>
+          <label>
+         Drive ID   <input name="drive_id" value={form.drive_id} onChange={handleChange} placeholder="Drive ID" /></label>
+          <label>
+         Folder Path   <input name="folder_path" value={form.folder_path} onChange={handleChange} placeholder="Folder Path" /></label>
           </>
         )}
 
         {/* 🔥 SharePoint Local */}
         {form.source_type === "sharepoint_local" && (
           <>
+          <label>
+         Source URL 
             <input
               name="source_url"
               value={form.source_url}
               onChange={handleChange}
               placeholder="C:/Users/.../SharePointDocs"
-            />
+            /></label>
           </>
         )}
-
+       <label>
+         Chunk Size
         <input
           type="number"
           name="chunk_size"
           value={form.chunk_size}
           onChange={handleChange}
           placeholder="Chunk Size"
-        />
+        /></label>
 
+        <label>
+         Chunk Overlap
         <input
           type="number"
           name="chunk_overlap"
           value={form.chunk_overlap}
           onChange={handleChange}
           placeholder="Chunk Overlap"
-        />
-
-        <input
-          name="collection_name"
-          value={form.collection_name}
-          onChange={handleChange}
-          placeholder="Collection Name"
-        />
+        /></label>
 
         <label>
+          Collection Name
+          <input
+            name="collection_name"
+            value={form.collection_name}
+            onChange={handleChange}
+            placeholder="Collection Name"
+          />
+        </label>
+
+       <label>
           <input
             type="checkbox"
             name="is_enabled"

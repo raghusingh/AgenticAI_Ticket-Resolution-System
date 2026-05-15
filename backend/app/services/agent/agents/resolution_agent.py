@@ -92,26 +92,23 @@ def _search_rag(tenant_id: str, description: str, top_k: int = 5) -> List[Dict]:
 
 # ── Agent nodes ───────────────────────────────────────────────────────────────
 
-def search_node(state: TicketState) -> TicketState:
-    """Search FAISS for similar tickets."""
+def reason_and_act_node(state: TicketState) -> TicketState:
+    """Search KB and evaluate results in a single node — no state passing needed."""
+
+    # ── Step 1: Search ────────────────────────────────────────────────────────
     print(f"[ResolutionAgent] 🔍 Searching knowledge base...")
     tickets = _search_rag(state["tenant_id"], state["description"])
     print(f"[ResolutionAgent] Found {len(tickets)} candidate(s)")
     for i, t in enumerate(tickets[:3], 1):
         print(f"  [{i}] {t.get('ticket_id')} | "
-              f"conf={t.get('confidence_score', 0):.4f} | "
+              f"conf={float(t.get('confidence_score') or 0):.4f} | "
               f"status={t.get('status')} | "
-              f"resolution={str(t.get('resolution', ''))[:50]}")
-    return {**state, "_rag_tickets": tickets}
+              f"resolution={str(t.get('resolution') or '')[:50]}")
 
-
-def evaluate_node(state: TicketState) -> TicketState:
-    """LLM evaluates results and picks best match."""
-    tickets = state.get("_rag_tickets", [])
+    steps = state.get("steps_completed", []) + ["resolution"]
 
     if not tickets:
         print(f"[ResolutionAgent] ⚠️  No tickets found — skipping evaluation")
-        steps = state.get("steps_completed", []) + ["resolution"]
         return {
             **state,
             "rag_tickets": [],
@@ -122,17 +119,17 @@ def evaluate_node(state: TicketState) -> TicketState:
             "steps_completed": steps,
         }
 
+    # ── Step 2: LLM Evaluate ──────────────────────────────────────────────────
     print(f"[ResolutionAgent] 🧠 Evaluating {len(tickets)} candidate(s)...")
 
-    # Build context for LLM
     ticket_summary = []
     for t in tickets:
         ticket_summary.append({
             "ticket_id": t.get("ticket_id"),
-            "description": t.get("ticket_description", "")[:200],
-            "resolution": t.get("resolution", "")[:200],
+            "description": (t.get("ticket_description") or "")[:200],
+            "resolution": (t.get("resolution") or "")[:200],
             "status": t.get("status"),
-            "confidence_score": t.get("confidence_score"),
+            "confidence_score": float(t.get("confidence_score") or 0),
         })
 
     context = {
@@ -171,14 +168,11 @@ def evaluate_node(state: TicketState) -> TicketState:
         "reasoning":       str(evaluation.get("reasoning") or ""),
     }
 
-    print(f"[ResolutionAgent] Best match: {evaluation.get('best_ticket_id')} | "
-          f"quality={evaluation.get('quality')} | conf={float(evaluation.get('confidence') or 0):.4f}")
-    print(f"[ResolutionAgent] Reasoning: {evaluation.get('reasoning')}")
+    print(f"[ResolutionAgent] Best match: {evaluation['best_ticket_id']} | "
+          f"quality={evaluation['quality']} | conf={evaluation['confidence']:.4f}")
+    print(f"[ResolutionAgent] Reasoning: {evaluation['reasoning']}")
 
-    steps = state.get("steps_completed", []) + ["resolution"]
-
-    # ✅ Only pass closed tickets with resolution to notification agent
-    # Open tickets have no resolution so they produce blank email rows
+    # ── Step 3: Filter to closed tickets with resolution for email ────────────
     closed_statuses = {"done", "closed", "resolved", "fixed", "complete", "completed"}
     resolved_tickets = [
         t for t in tickets
@@ -190,10 +184,10 @@ def evaluate_node(state: TicketState) -> TicketState:
 
     return {
         **state,
-        "rag_tickets": resolved_tickets,  # ✅ only closed tickets with resolution
-        "best_confidence": float(evaluation.get("confidence") or 0),
-        "best_resolution": evaluation.get("best_resolution", ""),
-        "best_ticket_id": evaluation.get("best_ticket_id", ""),
+        "rag_tickets": resolved_tickets,
+        "best_confidence": evaluation["confidence"],
+        "best_resolution": evaluation["best_resolution"],
+        "best_ticket_id":  evaluation["best_ticket_id"],
         "resolution_status": "found" if resolved_tickets else "not_found",
         "steps_completed": steps,
     }
@@ -203,11 +197,9 @@ def evaluate_node(state: TicketState) -> TicketState:
 
 def build_resolution_agent():
     graph = StateGraph(TicketState)
-    graph.add_node("search", search_node)
-    graph.add_node("evaluate", evaluate_node)
-    graph.set_entry_point("search")
-    graph.add_edge("search", "evaluate")
-    graph.add_edge("evaluate", END)
+    graph.add_node("reason_and_act", reason_and_act_node)
+    graph.set_entry_point("reason_and_act")
+    graph.add_edge("reason_and_act", END)
     return graph.compile()
 
 

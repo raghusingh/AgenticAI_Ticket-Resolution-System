@@ -198,7 +198,19 @@ function ResultsTable({ tickets, onRefresh }) {
   const [closing, setClosing] = useState(false)
   const [toast, setToast] = useState(null)
 
-  if (!tickets?.length) return null
+  if (!tickets?.length) return (
+    <div style={{
+      padding: '24px',
+      textAlign: 'center',
+      color: '#94a3b8',
+      fontSize: '14px',
+      background: 'var(--color-background-secondary, #f8fafc)',
+      borderRadius: '8px',
+      border: '1px solid var(--color-border-tertiary, #e2e8f0)',
+    }}>
+      🔍 No matching tickets found for this query.
+    </div>
+  )
 
   const closedStatuses = new Set(['done', 'closed', 'resolved', 'fixed'])
 
@@ -313,7 +325,7 @@ function ResultsTable({ tickets, onRefresh }) {
                         padding: '4px 12px', borderRadius: '5px',
                         border: '1px solid #2563eb', background: '#eff6ff',
                         color: '#2563eb', cursor: 'pointer',
-                        fontSize: '10px', fontWeight: '600',
+                        fontSize: '12px', fontWeight: '600',
                         whiteSpace: 'nowrap',
                       }}
                     >
@@ -453,12 +465,17 @@ export default function ChatPage({ user, onLogout }) {
         generate_answer: false,
       })
 
-      const ticketRows =
+      // ✅ Filter out empty/invalid ticket rows (all fields blank = "-")
+      const rawRows =
         data?.tickets?.length > 0
           ? data.tickets
           : Array.isArray(data?.sources)
             ? data.sources
             : []
+
+      const ticketRows = rawRows.filter(t =>
+        t.ticket_id && t.ticket_id.toString().trim() !== '' && t.ticket_id !== '-'
+      )
 
       updateActiveChatMessages((prev) => {
         const next = [...prev]
@@ -517,9 +534,12 @@ export default function ChatPage({ user, onLogout }) {
         question: lastQuery,
         generate_answer: false,
       })
-      const ticketRows = data?.tickets?.length > 0
+      const rawRows2 = data?.tickets?.length > 0
         ? data.tickets
         : Array.isArray(data?.sources) ? data.sources : []
+      const ticketRows = rawRows2.filter(t =>
+        t.ticket_id && t.ticket_id.toString().trim() !== '' && t.ticket_id !== '-'
+      )
 
       updateActiveChatMessages((prev) => {
         // Remove last tickets message and replace with fresh results
@@ -549,12 +569,12 @@ export default function ChatPage({ user, onLogout }) {
 
   return (
     <div className="app-shell">
-      <Sidebar
+      {/* <Sidebar
         onNewChat={handleNewChat}
         chats={chats}
         activeChatId={activeChatId}
         onSelectChat={setActiveChatId}
-      />
+      /> */}
 
       <div className="main-panel">
       <Header user={user} onLogout={onLogout} view={view} setView={setView} />
